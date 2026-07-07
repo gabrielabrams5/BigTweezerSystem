@@ -26,6 +26,8 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 try:
     import EasyPySpin
+    from classes.easypyspin_patch import apply_easypyspin_patch
+    apply_easypyspin_patch()
 except Exception:
     pass
 
