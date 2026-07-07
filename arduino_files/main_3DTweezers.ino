@@ -367,15 +367,33 @@ void set6(float DC6){
 
 void loop()
 {
-    if  (myTransfer.available()){ 
-      
-              uint16_t message = 0;
-              message = myTransfer.rxObj(action,message);  
+    if (myTransfer.available()) {
+        uint16_t message = 0;
+        message = myTransfer.rxObj(action, message);
 
-
+        // Only refresh calibration/gain state when a new packet arrives, and
+        // only if the packet actually looks like a 17-float packet. This
+        // protects against (a) the pre-first-packet boot state where action[]
+        // is all zeros (which would zero every coil gain and silence the
+        // whole rig) and (b) an old 10-float Python packet where slots
+        // 10..16 read garbage past the end of the received bytes.
+        //
+        // Heuristic: at least one gain should be > 0 in a valid new-protocol
+        // packet (Python defaults all six gains to 1.0). If every gain is
+        // zero AND calibration_mode is zero, treat this as a legacy packet
+        // and leave the previous coil_values in place.
+        float new_cal_mode = action[10];
+        float g[6] = {action[11], action[12], action[13],
+                      action[14], action[15], action[16]};
+        bool all_gains_zero = (g[0] == 0 && g[1] == 0 && g[2] == 0 &&
+                               g[3] == 0 && g[4] == 0 && g[5] == 0);
+        if (!(all_gains_zero && new_cal_mode == 0)) {
+            calibration_mode = new_cal_mode;
+            for (int i = 0; i < 6; i++) coil_values[i] = g[i];
+        }
     }
 
-   
+
    //NEW LOGIC
    Bx_uniform = action[0];
    By_uniform = action[1];
@@ -387,13 +405,6 @@ void loop()
    gradient_status = action[7];
    equal_field_status = action[8];
    acoustic_frequency = action[9];
-   calibration_mode = action[10];
-   coil_values[0] = action[11];
-   coil_values[1] = action[12];
-   coil_values[2] = action[13];
-   coil_values[3] = action[14];
-   coil_values[4] = action[15];
-   coil_values[5] = action[16];
 
 
    if (acoustic_frequency != 0){
