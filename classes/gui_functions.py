@@ -937,7 +937,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.cap  = EasyPySpin.VideoCapture(0)
    
                 self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
-                self.cap.set(cv2.CAP_PROP_FPS, 24)
+                # Camera max frame rate at full resolution is ~19 fps; asking for
+                # more just triggers an EasyPySpin clamp warning each launch.
+                self.cap.set(cv2.CAP_PROP_FPS, 19)
                 self.tbprint("Connected to FLIR Camera")
 
                 if not self.cap.isOpened():
