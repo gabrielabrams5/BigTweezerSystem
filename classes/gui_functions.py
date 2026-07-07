@@ -935,15 +935,39 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.videopath == 0:
             try:
                 self.cap  = EasyPySpin.VideoCapture(0)
-   
+
                 self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
                 # Camera max frame rate at full resolution is ~19 fps; asking for
                 # more just triggers an EasyPySpin clamp warning each launch.
                 self.cap.set(cv2.CAP_PROP_FPS, 19)
+
+                # Force BGR8 pixel format. PixelFormat is read-only while
+                # streaming, so end acquisition, set the format, restart. Doing
+                # this here rather than relying on the EasyPySpin monkey-patch
+                # covers cases where our source-patch needle doesn't match.
+                try:
+                    import PySpin
+                    cam = self.cap.cam
+                    try:
+                        cam.EndAcquisition()
+                    except Exception:
+                        pass
+                    try:
+                        cam.PixelFormat.SetValue(PySpin.PixelFormat_BGR8)
+                        self.tbprint("Camera PixelFormat set to BGR8")
+                    except Exception as e:
+                        self.tbprint(f"Could not set PixelFormat=BGR8 ({e}); leaving default")
+                    try:
+                        cam.BeginAcquisition()
+                    except Exception:
+                        pass
+                except ImportError:
+                    pass
+
                 self.tbprint("Connected to FLIR Camera")
 
                 if not self.cap.isOpened():
-                    self.cap  = cv2.VideoCapture(0) 
+                    self.cap  = cv2.VideoCapture(0)
                     self.tbprint("No EasyPySpin Camera Available")
             
             except Exception:

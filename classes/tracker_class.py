@@ -458,9 +458,19 @@ class VideoThread(QThread):
             
             
             ret, frame = self.cap.read()
-        
+
+            # Belt-and-braces: downstream code assumes frame is a 3-channel BGR
+            # array. If the camera is stuck emitting single-channel frames
+            # (Mono8 or a raw Bayer we haven't debayered), promote to BGR here
+            # so cv2.cvtColor(..., BGR2GRAY) / BGR2RGB don't explode.
+            if ret and frame is not None:
+                if frame.ndim == 2:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                elif frame.ndim == 3 and frame.shape[2] == 1:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
             #control_mask = None
-            if ret:       
+            if ret:
                 if self.totalnumframes ==0:         
                     self.cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
                     self.um2pixel =   3.35 / self.objective
