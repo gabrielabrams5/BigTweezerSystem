@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime output (local experiment data)
+Data/*
+!Data/.gitkeep
+Microrobots/Tracking Data/*
+!Microrobots/Tracking Data/.gitkeep
+
+# Build artifacts
+build/
+dist/
+*.spec
