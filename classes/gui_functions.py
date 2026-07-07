@@ -43,6 +43,12 @@ from classes.projection_class import AxisProjection
 from classes.acoustic_class import AcousticClass
 from classes.halleffect_class import HallEffect
 from classes.record_class import RecordThread
+from classes.calibration_dialog import CalibrationDialog, load_calibration
+
+CALIBRATION_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "calibration.json",
+)
 
 
 
@@ -159,8 +165,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.arduino2 = ArduinoHandler(self.tbprint)
         self.arduino2.connect(PORT2)
-        
-        
+
+        # Auto-load coil-calibration gains if calibration.json exists in the repo root.
+        gains = load_calibration(CALIBRATION_PATH)
+        if gains is not None:
+            self.arduino1.set_gains(gains)
+            self.tbprint(f"Loaded calibration from {CALIBRATION_PATH}")
+
+        # Menu action to open the Calibration dialog.
+        menu = self.menuBar().addMenu("&Tools")
+        cal_action = menu.addAction("Coil Calibration...")
+        cal_action.triggered.connect(self.open_calibration_dialog)
+
         #define, simulator class, pojection class, and acoustic class
         self.simulator = HelmholtzSimulator(self.ui.magneticfieldsimlabel, width=310, height=310, dpi=200)
         self.projection = AxisProjection()
@@ -587,7 +603,17 @@ class MainWindow(QtWidgets.QMainWindow):
    
     
     
-    def toggle_control_status(self): 
+    def open_calibration_dialog(self):
+        dlg = CalibrationDialog(self.arduino1, self.tbprint, CALIBRATION_PATH, parent=self)
+        dlg.exec_()
+        # When dialog closes, zero the coils so a lingering test pulse doesn't stay on.
+        try:
+            self.arduino1.send_calibration_all_off()
+        except Exception:
+            pass
+
+
+    def toggle_control_status(self):
         if self.ui.controlbutton.isChecked():
             self.control_status = True
             self.ui.controlbutton.setText("Stop")

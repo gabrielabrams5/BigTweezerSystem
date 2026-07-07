@@ -20,7 +20,12 @@
 SerialTransfer myTransfer;
 
 
-float action[10]; //an array to store incoming data from python (must match Python send order in arduino_class.ArduinoHandler.send)
+// Packet layout (17 floats, order MUST match Python arduino_class.ArduinoHandler.send):
+//   [0..9]  = Bx, By, Bz, alpha, gamma, freq, psi, gradient, equal_field, acoustic_freq
+//   [10]    = calibration_mode  (0 = normal field-mixing, 1 = direct per-coil PWM)
+//   [11..16]= coil_values[6]    (in normal mode: gain multiplier for each of C1..C6;
+//                                in calibration mode: direct PWM duty (0..1) for each coil)
+float action[17];
 
 
 
@@ -39,7 +44,8 @@ float psi;
 float gradient_status;
 float equal_field_status;
 float acoustic_frequency;
-float null;
+float calibration_mode;
+float coil_values[6] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};   // default gains 1.0 in normal mode
 // coil command signals
 float C1 = 0, C2 = 0, C3 = 0, C4 = 0, C5 = 0, C6 = 0;
 float MaxVal = 0;
@@ -373,24 +379,41 @@ void loop()
    //NEW LOGIC
    Bx_uniform = action[0];
    By_uniform = action[1];
-   Bz_uniform = action[2];   
+   Bz_uniform = action[2];
    alpha = action[3];
    gamma = action[4];
-   rolling_frequency = action[5]; 
-   psi = action[6]; 
+   rolling_frequency = action[5];
+   psi = action[6];
    gradient_status = action[7];
    equal_field_status = action[8];
    acoustic_frequency = action[9];
-  
+   calibration_mode = action[10];
+   coil_values[0] = action[11];
+   coil_values[1] = action[12];
+   coil_values[2] = action[13];
+   coil_values[3] = action[14];
+   coil_values[4] = action[15];
+   coil_values[5] = action[16];
 
-   
-   
 
    if (acoustic_frequency != 0){
       DDS.setfreq(acoustic_frequency, phase);
    }
    else{
       DDS.down();
+   }
+
+   // Calibration mode: bypass all field mixing and drive each coil directly
+   // with the value in coil_values[]. Used by the GUI's Calibration tab to
+   // pulse one coil at a time while the user measures its field.
+   if (calibration_mode > 0.5) {
+      set1(coil_values[0]);
+      set2(coil_values[1]);
+      set3(coil_values[2]);
+      set4(coil_values[3]);
+      set5(coil_values[4]);
+      set6(coil_values[5]);
+      return;
    }
    
    
@@ -529,13 +552,13 @@ C6 = 0;
         C6 = C6/MaxVal;
       }
 
-    set1(C1);
-    set2(C2);
-    set3(C3);
-    set4(C4);
-    set5(C5);
-    set6(C6);
- 
+    set1(C1 * coil_values[0]);
+    set2(C2 * coil_values[1]);
+    set3(C3 * coil_values[2]);
+    set4(C4 * coil_values[3]);
+    set5(C5 * coil_values[4]);
+    set6(C6 * coil_values[5]);
+
    }
 
    // if gradient status = 0: output the corresponding "uniform" field.
@@ -600,12 +623,12 @@ C6 = 0;
       }
 
       
-    set1(C1);
-    set2(C2);
-    set3(C3);
-    set4(C4);
-    set5(C5);
-    set6(C6);
+    set1(C1 * coil_values[0]);
+    set2(C2 * coil_values[1]);
+    set3(C3 * coil_values[2]);
+    set4(C4 * coil_values[3]);
+    set5(C5 * coil_values[4]);
+    set6(C6 * coil_values[5]);
    }
 
      //set1(0); //west
