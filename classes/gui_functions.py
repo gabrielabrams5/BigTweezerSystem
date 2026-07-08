@@ -41,6 +41,13 @@ from classes.joystick_class import Mac_Controller,Linux_Controller,Windows_Contr
 from classes.simulation_class import HelmholtzSimulator
 from classes.acoustic_class import AcousticClass
 from classes import field_synth
+from classes.field_tabs import FieldControlsDock
+
+
+CALIBRATION_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "calibration.json",
+)
 from classes.halleffect_class import HallEffect
 from classes.record_class import RecordThread
 
@@ -181,8 +188,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.halleffect.sensor_signal.connect(self.update_halleffect_sensor)
         self.halleffect.start()
         
+        # Auto-load calibration gains into arduino1 before any packet goes out.
+        gains = field_synth.load_gains(CALIBRATION_PATH)
+        if gains is not None:
+            self.arduino1.coil_gains = gains
+            self.tbprint(f"Loaded calibration from {CALIBRATION_PATH}")
+
+        # Add the tabbed Field Controls dock. Docked to the top so the two
+        # existing side docks (tracking / control) stay visible below it.
+        self.field_controls_dock = FieldControlsDock(self, CALIBRATION_PATH)
+        self.addDockWidget(QtCore.Qt.TopDockWidgetArea, self.field_controls_dock)
+
         self.setFile()
-        
+
         pygame.init()
         if pygame.joystick.get_count() == 0:
             self.tbprint("No Joystick Connected...")

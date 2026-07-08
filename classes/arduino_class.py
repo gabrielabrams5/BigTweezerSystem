@@ -28,6 +28,11 @@ class ArduinoHandler:
         self.conn = None
         self.port = None
         self.printer = printer
+        # Per-coil calibration gains applied to any send(). Owned here so
+        # the calibration tab has one obvious place to write. Default 1.0
+        # is neutral. Negative values invert an individual coil's polarity
+        # (fix for a coil wound backward at build time).
+        self.coil_gains = [1.0] * 6
 
     def connect(self, port) -> None:
         """Open a SerialTransfer connection. Idempotent and non-fatal on failure."""
@@ -62,12 +67,19 @@ class ArduinoHandler:
             self.port = None
 
     def send(self, currents: Sequence[float], acoustic_freq: float = 0.0) -> None:
-        """Send the 7-float packet: 6 signed coil currents + acoustic freq."""
+        """Send the 7-float packet: 6 signed coil currents + acoustic freq.
+
+        Applies self.coil_gains element-wise, then clamps to [-1, 1]. Passing
+        pre-calibrated currents from the caller is fine (gains default to
+        1.0 so this is a no-op unless the calibration tab changed them).
+        """
         currents = list(currents)
         if len(currents) != 6:
             self.printer(f"send: expected 6 currents, got {len(currents)}")
             return
-        data = [round(float(c), 3) for c in currents] + [float(acoustic_freq)]
+        currents = [max(-1.0, min(1.0, float(c) * float(g)))
+                    for c, g in zip(currents, self.coil_gains)]
+        data = [round(c, 3) for c in currents] + [float(acoustic_freq)]
         if self.conn is None:
             self.printer("No Connection:  " + self.PACKET_LABEL + " = " + str(data))
         else:
