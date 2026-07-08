@@ -61,6 +61,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
+        # The .ui-generated dock widgets carry hard-coded minimum heights
+        # (329x987 and 411x1000) that prevent the operator from shrinking
+        # the main window below ~1000 px tall -- worse than the available
+        # viewport on most MacBook screens. Relax them so the window can
+        # actually be resized.
+        self.ui.dockWidget.setMinimumSize(QtCore.QSize(200, 300))
+        self.ui.dockWidget_2.setMinimumSize(QtCore.QSize(200, 300))
+
         
 
         
