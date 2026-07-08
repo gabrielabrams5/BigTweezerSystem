@@ -982,6 +982,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     
     def setFile(self):
+        # setFile is called from __init__ AND from track() (and selectFile).
+        # If we don't release the previous capture, aravis / EasyPySpin can't
+        # re-claim the USB and we silently fall through to the cv2 webcam.
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
         if self.videopath == 0:
             # Preferred camera source order:
             #   1. aravis (Homebrew) -- lets FLIR U3V cameras stream on macOS
