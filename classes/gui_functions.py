@@ -155,16 +155,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
         #connect to arduino
+        # Auto-discover on Unix-y systems by globbing /dev/cu.usbmodem*
+        # (macOS) or /dev/ttyACM* (Linux). Hard-coded port numbers vary
+        # per-Mac depending on which USB port the Arduino is in, so
+        # discovery is more reliable than fixed strings.
+        import glob as _glob
         PORT1, PORT2 = None, None
         if "mac" in platform.platform():
             self.tbprint("Detected OS: macos")
-            PORT1 = "/dev/cu.usbmodem11401"
-            PORT2 = "/dev/cu.usbmodem11301"
+            candidates = sorted(_glob.glob("/dev/cu.usbmodem*"))
+            if candidates:
+                PORT1 = candidates[0]
+                if len(candidates) > 1:
+                    PORT2 = candidates[1]
             self.controller_actions = Mac_Controller()
         elif "Linux" in platform.platform():
             self.tbprint("Detected OS: Linux")
-            PORT1 = "/dev/ttyACM0"
-            PORT2 = "/dev/ttyACM1"
+            candidates = sorted(_glob.glob("/dev/ttyACM*"))
+            if candidates:
+                PORT1 = candidates[0]
+                if len(candidates) > 1:
+                    PORT2 = candidates[1]
+            else:
+                PORT1 = "/dev/ttyACM0"
             self.controller_actions = Linux_Controller()
         elif "Windows" in platform.platform():
             self.tbprint("Detected OS:  Windows")
