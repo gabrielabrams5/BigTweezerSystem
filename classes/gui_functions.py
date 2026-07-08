@@ -128,6 +128,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sensorBx, self.sensorBy, self.sensorBz = 0,0,0
         self.field_magnitude = 100
 
+        # New (Step 3) field-synth state model. These are the *authoritative*
+        # inputs to apply_actions() -> arduino1.send_field(). The old Bx/By/Bz
+        # etc. above are scratch space that legacy code paths still write to;
+        # they get folded into this model at the end of update_actions().
+        # Steps 4-6 delete the old scratch vars entirely.
+        self.uniform_B = np.array([0.0, 0.0, 0.0])
+        self.gradient_dir = np.array([0.0, 0.0, 1.0])   # default: pull upward
+        self.gradient_mag = 0.0                          # magnitude of gradient bias
+        self.gradient_scale = 0.5                        # what "gradient checkbox on" means
+        self.roll_axis = np.array([0.0, 0.0, 1.0])       # default: roll about vertical
+        self.roll_freq = 0.0                             # Hz
+        self.roll_on = False
+
         #control tab functions
         self.control_status = False
         self.joystick_status = False
@@ -462,50 +475,57 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
+    def _sync_new_state(self):
+        """Bridge the legacy Bx/By/Bz/freq/gradient_status scratch vars into the
+        new field_synth-facing state (uniform_B, gradient_*, roll_*).
+        Step 6 replaces the legacy inputs with dedicated widgets; until then
+        this bridge keeps both models coherent."""
+        self.uniform_B = np.array([float(self.Bx), float(self.By), float(self.Bz)])
+        self.gradient_mag = self.gradient_scale if self.gradient_status else 0.0
+        self.roll_freq = float(self.freq)
+        self.roll_on = self.roll_freq > 1e-9
+        # roll_axis + gradient_dir stay at their previous values (Step 6 exposes
+        # them as GUI-editable spinboxes). Default is +z for both.
+
     def apply_actions(self, status):
-        #the purpose of this function is to output the actions via arduino, 
-        # show the actions via the simulator
-        # and record the actions by appending the field_list
-        if self.freq > 0:
-            if self.ui.swimradio.isChecked():
-                self.simulator.roll = False
-            elif self.ui.rollradio.isChecked():
-                self.alpha = self.alpha - np.pi/2
-                self.simulator.roll = True
+        """Push the current field-synth state to the Arduino.
 
-        #zero output
-        if status == False:
+        `status=False` means the operator is stopping output: zero all state
+        and send a zeroed packet. Simulator visualization is now driven by the
+        commanded field vector (uniform_B), not the old alpha/gamma/psi
+        parametrization -- the simulator overhaul in Step 5 completes this.
+        """
+        if status is False:
             self.manual_status = False
-            self.Bx, self.By, self.Bz, self.alpha, self.gamma, self.freq, self.psi, self.acoustic_frequency = 0,0,0,0,0,0,0,0
+            self.Bx = self.By = self.Bz = 0.0
+            self.alpha = self.gamma = self.psi = self.freq = 0.0
+            self.acoustic_frequency = 0.0
 
-        #output current actions to simulator
+        self._sync_new_state()
 
-        self.simulator.Bx = self.Bx
-        self.simulator.By = self.By
-        self.simulator.Bz = self.Bz
+        # Feed the simulator the new state. Post-Step-5 the simulator uses
+        # uniform_B directly; for now keep the legacy attributes populated
+        # so we don't break HelmholtzSimulator.animate() before its rewrite.
+        self.simulator.Bx = self.uniform_B[0]
+        self.simulator.By = self.uniform_B[1]
+        self.simulator.Bz = self.uniform_B[2]
         self.simulator.alpha = self.alpha
         self.simulator.gamma = self.gamma
         self.simulator.psi = self.psi
-        self.simulator.freq = self.freq
-        self.simulator.omega = 2 * np.pi * self.simulator.freq
+        self.simulator.freq = self.roll_freq
+        self.simulator.omega = 2 * np.pi * self.roll_freq
 
-        # Step 2 transitional: send via the new field_synth-backed send_field(...).
-        # The full uniform/gradient/roll UI split lands in Step 3; for now we
-        # pass the manual field as uniform_B and treat self.freq as a z-axis
-        # roll frequency. gradient_status/equal_field_status/alpha/gamma/psi
-        # from the old model are ignored here and get replaced by proper
-        # controls in Step 3.
         self.arduino1.send_field(
-            self.Bx, self.By, self.Bz,
-            gradient_dir=(0.0, 0.0, 1.0),
-            gradient_mag=0.0,
-            roll_axis=(0.0, 0.0, 1.0),
-            roll_freq=float(self.freq),
+            self.uniform_B[0], self.uniform_B[1], self.uniform_B[2],
+            gradient_dir=self.gradient_dir,
+            gradient_mag=self.gradient_mag,
+            roll_axis=self.roll_axis,
+            roll_freq=self.roll_freq,
             t=time.perf_counter(),
             acoustic_freq=float(self.acoustic_frequency),
         )
-        # arduino2 (stage position controller) is not re-wired in Step 2.
-        # Zero-currents keep it silent if actually attached.
+        # arduino2 (stage position controller) is not wired to the field-synth
+        # path. Keep it silent until the state-machine rebuild in Step 6.
         self.arduino2.send([0.0] * 6, 0.0)
 
 
