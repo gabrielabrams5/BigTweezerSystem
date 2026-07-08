@@ -24,3 +24,7 @@ Microrobots/Tracking Data/*
 build/
 dist/
 *.spec
+
+# Operator-specific per-coil calibration (each rig differs). A neutral
+# calibration_example.json is committed as a template.
+calibration.json

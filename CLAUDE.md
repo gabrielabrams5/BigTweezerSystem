@@ -2,9 +2,33 @@
 
 ## What this project is
 
-A PyQt5 desktop application that controls a benchtop / portable microrobotic experimentation platform combining **magnetic** and **acoustic** actuation. It ingests a live microscope camera feed (FLIR / EasyPySpin, or a video file), tracks micro-robots and cells in real time via OpenCV, and sends control commands over USB serial to an **Arduino**, which is what actually drives the Helmholtz / gradient coil amplifiers. An AD9850 DDS + X9C104 digital pot (driven from the host via `RPi.GPIO`) generates the acoustic transducer signal.
+A PyQt5 desktop application that controls a benchtop / portable microrobotic experimentation platform combining **magnetic** and **acoustic** actuation. It ingests a live microscope camera feed (FLIR / EasyPySpin, or a video file), tracks micro-robots and cells in real time via OpenCV, and sends per-coil PWM commands over USB serial to an **Arduino**, which drives the 6-coil H-bridge stack. An AD9850 DDS module on the Arduino generates the acoustic transducer signal.
 
-The Python GUI is the *host-side* software. It's developed and deployed on an Nvidia Jetson AGX Orin (the README's install steps target that board), but also runs on macOS and Windows for development and offline video analysis. The Arduino firmware in `classes/main.ino` / `classes/main_Bigtweezers/` is a separate build that lives on the microcontroller and receives the 10-float action packet from the host.
+The Python GUI is the *host-side* software. It runs on macOS, Windows, and Nvidia Jetson AGX Orin.
+
+## Coil geometry and field synthesis (rewritten on `rewrite-3d-control` branch)
+
+The rig is a **6-coil 3D-tweezer** with two aligned rings of three:
+- **Top ring**: coils C1, C2, C3 at azimuths 0°, 120°, 240°. Each axis 45° from vertical, tips point inward.
+- **Bottom ring**: coils C4, C5, C6 at the same azimuths, mirrored below.
+
+All physics lives in `classes/field_synth.py`. The 3×6 matrix `COIL_AXES` is the single source of truth for geometry. Uniform-field targets are solved via minimum-norm pseudoinverse; the geometry gives `A · Aᵀ = diag(3/2, 3/2, 3)` exactly, so the pseudoinverse is a two-matmul closed form. Gradient synthesis uses `I_i = g · (n̂_i · d̂)`. Rolling produces a zero-mean current delta on top of the static uniform contribution.
+
+The Arduino is a **dumb 6-channel PWM writer**: it reads a 7-float packet `[I1..I6, acoustic_freq]` and calls `set1(I1)..set6(I6)` directly. No coil geometry lives in the firmware. Firmware file: `arduino_files/main_3DTweezers.ino`. ~170 lines.
+
+## Coil calibration
+
+Each rig's six coils inevitably deliver slightly different fields for identical PWM duty (winding variation, driver-channel differences, wiring path lengths). Per-coil gains live in `calibration.json` at the repo root — gitignored, so operator gains stay local. A neutral template lives in `calibration_example.json`.
+
+Operator flow:
+1. Launch the app. The **Field Controls** dock (top of the window) has a **Calibration** tab.
+2. Adjust "Test drive strength" (default 0.3 = 30% PWM).
+3. For each coil in turn: click **Test**. The Arduino fires only that coil at that strength. Read the magnetometer at a fixed reference position.
+4. Adjust that coil's **Gain** spinbox until the magnetometer reads the target field (e.g. 2 mT).
+5. When all six read the same, click **Save + Apply**. Values persist to `calibration.json` and take effect on the next serial send.
+6. On next launch the app auto-loads `calibration.json` if present.
+
+Negative gains are legal — they invert an individual coil's H-bridge polarity for coils wound backward at build time, without a code change.
 
 ## Entry point
 
