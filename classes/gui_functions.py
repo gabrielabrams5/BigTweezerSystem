@@ -976,48 +976,56 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def setFile(self):
         if self.videopath == 0:
+            # Preferred camera source order:
+            #   1. aravis (Homebrew) -- lets FLIR U3V cameras stream on macOS
+            #      where Spinnaker isn't officially supported. Also works on
+            #      Linux where it's an easy alternative to Spinnaker.
+            #   2. EasyPySpin (Spinnaker SDK) -- Windows / Linux with FLIR SDK.
+            #   3. cv2.VideoCapture(0) -- fallback to a UVC webcam.
             try:
-                self.cap  = EasyPySpin.VideoCapture(0)
+                from classes import aravis_camera
+                if aravis_camera.is_available():
+                    self.cap = aravis_camera.AravisCameraCapture()
+                    if self.cap.isOpened():
+                        self.cap.set(cv2.CAP_PROP_FPS, 19)
+                        self.tbprint("Connected to FLIR Camera via aravis")
+                    else:
+                        self.cap = None
+            except Exception as e:
+                self.tbprint(f"aravis backend unavailable: {e}")
+                self.cap = None
 
-                self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
-                # Camera max frame rate at full resolution is ~19 fps; asking for
-                # more just triggers an EasyPySpin clamp warning each launch.
-                self.cap.set(cv2.CAP_PROP_FPS, 19)
-
-                # Force BGR8 pixel format. PixelFormat is read-only while
-                # streaming, so end acquisition, set the format, restart. Doing
-                # this here rather than relying on the EasyPySpin monkey-patch
-                # covers cases where our source-patch needle doesn't match.
+            if self.cap is None or not self.cap.isOpened():
                 try:
-                    import PySpin
-                    cam = self.cap.cam
-                    try:
-                        cam.EndAcquisition()
-                    except Exception:
-                        pass
-                    try:
-                        cam.PixelFormat.SetValue(PySpin.PixelFormat_BGR8)
-                        self.tbprint("Camera PixelFormat set to BGR8")
-                    except Exception as e:
-                        self.tbprint(f"Could not set PixelFormat=BGR8 ({e}); leaving default")
-                    try:
-                        cam.BeginAcquisition()
-                    except Exception:
-                        pass
-                except ImportError:
-                    pass
+                    self.cap = EasyPySpin.VideoCapture(0)
+                    self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
+                    self.cap.set(cv2.CAP_PROP_FPS, 19)
 
-                self.tbprint("Connected to FLIR Camera")
+                    # Force BGR8 pixel format. PixelFormat is read-only while
+                    # streaming, so end acquisition, set format, restart.
+                    try:
+                        import PySpin
+                        cam = self.cap.cam
+                        try: cam.EndAcquisition()
+                        except Exception: pass
+                        try:
+                            cam.PixelFormat.SetValue(PySpin.PixelFormat_BGR8)
+                            self.tbprint("Camera PixelFormat set to BGR8")
+                        except Exception as e:
+                            self.tbprint(f"Could not set PixelFormat=BGR8 ({e}); leaving default")
+                        try: cam.BeginAcquisition()
+                        except Exception: pass
+                    except ImportError:
+                        pass
 
-                if not self.cap.isOpened():
-                    self.cap  = cv2.VideoCapture(0)
-                    self.tbprint("No EasyPySpin Camera Available")
-            
-            except Exception:
-                self.cap  = cv2.VideoCapture(0) 
-                self.tbprint("No EasyPySpin Camera Available")
-                
-                
+                    self.tbprint("Connected to FLIR Camera via EasyPySpin")
+                except Exception:
+                    self.cap = None
+
+                if self.cap is None or not self.cap.isOpened():
+                    self.cap = cv2.VideoCapture(0)
+                    self.tbprint("No FLIR camera found; using webcam via cv2")
+
             self.ui.pausebutton.hide()
             self.ui.leftbutton.hide()
             self.ui.rightbutton.hide()
