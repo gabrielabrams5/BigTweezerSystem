@@ -489,10 +489,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.simulator.freq = self.freq
         self.simulator.omega = 2 * np.pi * self.simulator.freq
 
-        #send arduino commands
-        self.arduino1.send(self.Bx, self.By, self.Bz, self.alpha, self.gamma, self.freq, self.psi, self.gradient_status, self.equal_field_status, self.acoustic_frequency)
-        
-        self.arduino2.send(self.Mx, self.My, self.Mz, 0, 0, 0, 0, 0, 0, 0)
+        # Step 2 transitional: send via the new field_synth-backed send_field(...).
+        # The full uniform/gradient/roll UI split lands in Step 3; for now we
+        # pass the manual field as uniform_B and treat self.freq as a z-axis
+        # roll frequency. gradient_status/equal_field_status/alpha/gamma/psi
+        # from the old model are ignored here and get replaced by proper
+        # controls in Step 3.
+        self.arduino1.send_field(
+            self.Bx, self.By, self.Bz,
+            gradient_dir=(0.0, 0.0, 1.0),
+            gradient_mag=0.0,
+            roll_axis=(0.0, 0.0, 1.0),
+            roll_freq=float(self.freq),
+            t=time.perf_counter(),
+            acoustic_freq=float(self.acoustic_frequency),
+        )
+        # arduino2 (stage position controller) is not re-wired in Step 2.
+        # Zero-currents keep it silent if actually attached.
+        self.arduino2.send([0.0] * 6, 0.0)
 
 
 

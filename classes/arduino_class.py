@@ -1,38 +1,43 @@
+"""ArduinoHandler for the 3D-tweezer 7-float protocol.
+
+Packet: [I1, I2, I3, I4, I5, I6, acoustic_freq]
+
+All six currents are signed PWM duty in [-1, 1]. The Arduino calls set*()
+directly on each; sign chooses H-bridge polarity. Python side handles all
+field synthesis via classes/field_synth.py.
+
+Also exposes a `send_field(...)` compatibility method that takes the
+legacy Bx/By/Bz + gradient + roll intent and synthesizes currents on the
+fly. This is transitional -- used during the gui_functions refactor so
+the old call sites keep working, then deleted in migration Step 4.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Sequence
+
 from pySerialTransfer import pySerialTransfer as txfer
 from pySerialTransfer.pySerialTransfer import InvalidSerialPort
-import time
+
 
 class ArduinoHandler:
-    """
-    Handles connections and messaging to an Arduino.
-
-    Attributes:
-        conn:   PySerialTransfer connection; has None value when no successsful
-                connection has been made
-        port:   name of connection port currently being used; has None value when
-                no successful port has been used
-    """
+    PACKET_LABEL = "[I1, I2, I3, I4, I5, I6, acoustic_freq]"
 
     def __init__(self, printer):
         self.conn = None
         self.port = None
         self.printer = printer
 
-        
-
-    def connect(self, port: str) -> None:
-        """
-        Initializes a connection to an arduino at a specified port. If successful,
-        the conn and port attributes are updated. If the port is unavailable or
-        already claimed (e.g. Arduino IDE Serial Monitor still open, or a stale
-        Python process holding the handle on Windows), we log and leave
-        self.conn = None so the GUI can still run in offline mode.
-        """
+    def connect(self, port) -> None:
+        """Open a SerialTransfer connection. Idempotent and non-fatal on failure."""
         if port is None:
             self.printer("No port specified for Arduino, skipping connection")
             return
         if self.conn is not None:
-            self.printer(f"Connection already initialized at port {self.port}, new port {port} ignored")
+            self.printer(
+                f"Connection already initialized at port {self.port}, new port {port} ignored"
+            )
             return
         try:
             self.conn = txfer.SerialTransfer(port)
@@ -55,65 +60,67 @@ class ArduinoHandler:
             self.printer(f"Could not connect to arduino at {port}: {type(e).__name__}: {e}")
             self.conn = None
             self.port = None
-   
-    # Packet layout: order MUST match main_3DTweezers.ino action[0..9] unpacking.
-    PACKET_LABEL = "[Bx, By, Bz, alpha, gamma, freq, psi, gradient, equal_field, acoustic_freq]"
 
-    def send(self, Bx, By, Bz, alpha, gamma, freq, psi, gradient_status, equal_field_status, acoustic_freq) -> None:
-        """sends action commands to arduino as a 10-float packet."""
-
-        alpha = round(alpha,3)
-        gamma = round(gamma,3)
-        psi = round(psi,3)
-        freq = round(freq,3)
-        Bx = round(Bx,3)
-        By = round(By,3)
-        Bz = round(Bz,3)
-
-        data = [float(Bx), float(By), float(Bz), float(alpha), float(gamma), float(freq),float(psi), float(gradient_status), float(equal_field_status), float(acoustic_freq)]
+    def send(self, currents: Sequence[float], acoustic_freq: float = 0.0) -> None:
+        """Send the 7-float packet: 6 signed coil currents + acoustic freq."""
+        currents = list(currents)
+        if len(currents) != 6:
+            self.printer(f"send: expected 6 currents, got {len(currents)}")
+            return
+        data = [round(float(c), 3) for c in currents] + [float(acoustic_freq)]
         if self.conn is None:
             self.printer("No Connection:  " + self.PACKET_LABEL + " = " + str(data))
         else:
             message = self.conn.tx_obj(data)
             self.conn.send(message)
             self.printer("Data Sent:  " + self.PACKET_LABEL + " = " + str(data))
-    
-    
-    def close(self) -> None:
-        """
-        Closes the current connection, if applicable
 
-        Args:
-            None
-        Returns:
-            None
+    def send_field(self, Bx, By, Bz,
+                   gradient_dir=(0.0, 0.0, 1.0), gradient_mag=0.0,
+                   roll_axis=(0.0, 0.0, 1.0), roll_freq=0.0,
+                   t=0.0, acoustic_freq=0.0,
+                   gains=None) -> None:
+        """High-level field intent -> per-coil currents via field_synth.
+
+        This is the recommended entry point for gui_functions. It hides the
+        matrix math behind a keyword-argument interface that mirrors the
+        operator's mental model (uniform field, gradient, roll, acoustic).
         """
+        # Import here so this module doesn't require numpy at import time on
+        # test / offline runs where field_synth is exercised separately.
+        from classes import field_synth
+        I = field_synth.synthesize(
+            uniform_B=(Bx, By, Bz),
+            gradient_dir=gradient_dir,
+            gradient_mag=gradient_mag,
+            roll_axis=roll_axis,
+            roll_freq_hz=roll_freq,
+            t=t,
+            gains=gains,
+        )
+        self.send(I, acoustic_freq)
+
+    def close(self) -> None:
         if self.conn is not None:
-         
             self.printer(f"Closing connection at port {self.port}")
-            self.send(0,0,0,0,0,0,0,0,0,0)
+            self.send([0.0] * 6, 0.0)
             self.conn.close()
-   
-            
 
 
 if __name__ == "__main__":
-
-    def tbprint(text):
-        #print to textbox
-        print(text)
-
-
-    PORT = "/dev/cu.usbmodem11301"
-    arduino = ArduinoHandler(tbprint)
+    # Smoke test: fire each coil in turn, then zero.
+    import sys
+    PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem11301"
+    arduino = ArduinoHandler(print)
     arduino.connect(PORT)
     time.sleep(1)
 
-    arduino.send(0,0,0,0,0,0,0,0,0,0)
-    print("sending")
-    time.sleep(5)
-    arduino.send(0,0,0,0,0,0,0,0,0,0)
-    print("zeroing")
+    for i in range(6):
+        currents = [0.0] * 6
+        currents[i] = 0.3
+        print(f"Firing coil C{i + 1} at 30% duty for 1 s")
+        arduino.send(currents, 0.0)
+        time.sleep(1.0)
+
+    arduino.send([0.0] * 6, 0.0)
     arduino.close()
-    
-    
