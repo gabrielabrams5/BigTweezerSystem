@@ -39,7 +39,6 @@ from classes.cell_class import Cell
 from classes.arduino_class import ArduinoHandler
 from classes.joystick_class import Mac_Controller,Linux_Controller,Windows_Controller
 from classes.simulation_class import HelmholtzSimulator
-from classes.projection_class import AxisProjection
 from classes.acoustic_class import AcousticClass
 from classes.halleffect_class import HallEffect
 from classes.record_class import RecordThread
@@ -174,9 +173,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.arduino2.connect(PORT2)
         
         
-        #define, simulator class, pojection class, and acoustic class
+        #define, simulator class, and acoustic class
         self.simulator = HelmholtzSimulator(self.ui.magneticfieldsimlabel, width=310, height=310, dpi=200)
-        self.projection = AxisProjection()
         self.acoustic_module = AcousticClass()
         self.halleffect = HallEffect(self)
         self.halleffect.sensor_signal.connect(self.update_halleffect_sensor)
@@ -839,26 +837,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def update_image(self, frame):
         """Updates the image_label with a new opencv image"""
-        #display projection
+        # Video-frame overlay. Old code drew a 3D axis-projection widget via
+        # projection_class.AxisProjection; that has been retired along with
+        # the alpha/gamma/psi coupling. We now overlay only the commanded
+        # uniform B vector (as text) and acoustic frequency. Step 5's new
+        # FieldSimulator carries the 3D visualization in a proper Qt widget.
         if self.ui.toggledisplayvisualscheckbox.isChecked():
-            if self.control_status == True or self.joystick_status == True or self.manual_status == True or self.excel_actions_status == True :
-                self.projection.roll = self.ui.rollradio.isChecked()
-                self.projection.gradient = self.gradient_status
-
-
-                frame, self.projection.draw_sideview(frame,self.Bx,self.By,self.Bz,self.alpha,self.gamma,self.video_width,self.video_height)
-                frame, self.projection.draw_topview(frame,self.Bx,self.By,self.Bz,self.alpha,self.gamma,self.video_width,self.video_height)
-                
-                rotatingfield = "alpha: {:.0f}, gamma: {:.0f}, psi: {:.0f}, freq: {:.0f}".format(np.degrees(self.alpha)+90, np.degrees(self.gamma), np.degrees(self.psi), self.freq) #adding 90 to alpha for display purposes only
-                
-                cv2.putText(frame, rotatingfield,
-                    (int(self.video_width / 1.8),int(self.video_height / 20)),
+            if self.control_status or self.joystick_status or self.manual_status or self.excel_actions_status:
+                Bx, By, Bz = self.uniform_B
+                field_txt = f"Bx: {Bx:+.2f}  By: {By:+.2f}  Bz: {Bz:+.2f}  roll: {self.roll_freq:.1f} Hz"
+                cv2.putText(frame, field_txt,
+                    (int(self.video_width / 1.8), int(self.video_height / 20)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    fontScale=1.5, 
+                    fontScale=1.5,
                     thickness=3,
-                    color = (255, 255, 255),
+                    color=(255, 255, 255),
                 )
-            
+
             acousticfreq = f'{self.acoustic_frequency:,} Hz'
             cv2.putText(frame, acousticfreq,
                 (int(self.video_width / 8),int(self.video_height / 14)),
