@@ -40,6 +40,7 @@ from classes.arduino_class import ArduinoHandler
 from classes.joystick_class import Mac_Controller,Linux_Controller,Windows_Controller
 from classes.simulation_class import HelmholtzSimulator
 from classes.acoustic_class import AcousticClass
+from classes import field_synth
 from classes.halleffect_class import HallEffect
 from classes.record_class import RecordThread
 
@@ -501,27 +502,22 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._sync_new_state()
 
-        # Feed the simulator the new state. Post-Step-5 the simulator uses
-        # uniform_B directly; for now keep the legacy attributes populated
-        # so we don't break HelmholtzSimulator.animate() before its rewrite.
-        self.simulator.Bx = self.uniform_B[0]
-        self.simulator.By = self.uniform_B[1]
-        self.simulator.Bz = self.uniform_B[2]
-        self.simulator.alpha = self.alpha
-        self.simulator.gamma = self.gamma
-        self.simulator.psi = self.psi
-        self.simulator.freq = self.roll_freq
-        self.simulator.omega = 2 * np.pi * self.roll_freq
-
-        self.arduino1.send_field(
-            self.uniform_B[0], self.uniform_B[1], self.uniform_B[2],
+        # Compute the currents once so the Arduino send and the simulator
+        # visualization see identical numbers. This is the same math the
+        # ArduinoHandler.send_field wrapper would do; we call synthesize()
+        # directly to also feed the simulator's bar chart.
+        t = time.perf_counter()
+        currents = field_synth.synthesize(
+            uniform_B=self.uniform_B,
             gradient_dir=self.gradient_dir,
             gradient_mag=self.gradient_mag,
             roll_axis=self.roll_axis,
-            roll_freq=self.roll_freq,
-            t=time.perf_counter(),
-            acoustic_freq=float(self.acoustic_frequency),
+            roll_freq_hz=self.roll_freq,
+            t=t,
+            gains=None,
         )
+        self.simulator.set_state(self.uniform_B, currents)
+        self.arduino1.send(currents, float(self.acoustic_frequency))
         # arduino2 (stage position controller) is not wired to the field-synth
         # path. Keep it silent until the state-machine rebuild in Step 6.
         self.arduino2.send([0.0] * 6, 0.0)
