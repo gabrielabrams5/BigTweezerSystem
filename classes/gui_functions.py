@@ -726,8 +726,15 @@ class MainWindow(QtWidgets.QMainWindow):
         
 
     def tbprint(self, text):
-        #print to textbox
-        self.ui.plainTextEdit.appendPlainText("$ "+ text)
+        # Route to both the GUI text log AND stderr so headless/small-screen
+        # debug is possible without seeing the widget (log appears in stdout
+        # / /tmp/bigtweezer_run.log when launching from terminal).
+        line = "$ " + text
+        self.ui.plainTextEdit.appendPlainText(line)
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
     
 
     def convert_coords(self,pos):
