@@ -47,9 +47,14 @@ def is_available() -> bool:
 
 
 class AravisCameraCapture:
-    """cv2.VideoCapture-lookalike backed by aravis."""
+    """cv2.VideoCapture-lookalike backed by aravis.
 
-    def __init__(self, device_id: Optional[str] = None):
+    Any init failure (e.g. camera claimed by another process) is captured
+    in `self.init_error` as a string. If a `printer` callback is provided
+    it also receives the error message so it shows up in the GUI log.
+    """
+
+    def __init__(self, device_id: Optional[str] = None, printer=None):
         # Local import so importing this module on Windows/Linux (where
         # aravis isn't installed) doesn't explode; caller is expected to
         # gate creation on is_available().
@@ -57,6 +62,7 @@ class AravisCameraCapture:
         gi.require_version("Aravis", "0.8")
         from gi.repository import Aravis
         self._Aravis = Aravis
+        self._printer = printer or (lambda _: None)
 
         self._opened = False
         self._cam = None
@@ -65,23 +71,16 @@ class AravisCameraCapture:
         self._width = 0
         self._height = 0
         self._fps = 30.0
+        self._pixel_format_str = ""
         self._latest_frame: Optional[np.ndarray] = None
         self._latest_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self.init_error: Optional[str] = None
 
         try:
             self._cam = Aravis.Camera.new(device_id)
-        except Exception:
-            return
-
-        try:
             self._width, self._height = self._cam.get_sensor_size()
-            # Keep whatever pixel format the camera boots in -- setting it
-            # here needs the camera not to be streaming (fine) but some
-            # setups have already-open handles that make SetValue fail
-            # with USB3Vision access-denied. We debayer / promote at read
-            # time so this backend works with Mono8 or BayerRG8 either way.
             self._payload = self._cam.get_payload()
             self._pixel_format_str = self._cam.get_pixel_format_as_string()
             self._stream = self._cam.create_stream(None, None)
@@ -91,8 +90,13 @@ class AravisCameraCapture:
             self._opened = True
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
-        except Exception:
+        except Exception as e:
             self._opened = False
+            self.init_error = f"{type(e).__name__}: {e}"
+            self._printer(f"aravis camera init failed: {self.init_error}")
+            # Common cause on macOS: a previous main.py crashed with the
+            # camera in a streaming state. Physical replug or `sudo pkill -f
+            # main.py; sleep 5` usually resolves LIBUSB_ERROR_ACCESS.
 
     # ------------------------------------------------------ cv2.VideoCapture API
 

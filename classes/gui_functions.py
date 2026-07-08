@@ -985,12 +985,14 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 from classes import aravis_camera
                 if aravis_camera.is_available():
-                    self.cap = aravis_camera.AravisCameraCapture()
+                    self.cap = aravis_camera.AravisCameraCapture(printer=self.tbprint)
                     if self.cap.isOpened():
                         self.cap.set(cv2.CAP_PROP_FPS, 19)
                         self.tbprint("Connected to FLIR Camera via aravis")
                     else:
                         self.cap = None
+                else:
+                    self.tbprint("aravis: no camera enumerated")
             except Exception as e:
                 self.tbprint(f"aravis backend unavailable: {e}")
                 self.cap = None
@@ -1398,13 +1400,21 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         called when x button is pressed
         """
-        
+
         if self.tracker is not None:
             self.tracker.stop()
         #self.recorder.stop()
-        
+
         self.simulator.stop()
         self.apply_actions(False)
         self.halleffect.stop()
         self.arduino1.close()
         self.arduino2.close()
+        # Release the camera. Important on the aravis path: without this the
+        # FLIR's USB claim can persist after the process dies and the next
+        # main.py launch gets LIBUSB_ERROR_ACCESS.
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
