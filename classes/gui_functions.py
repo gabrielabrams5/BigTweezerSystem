@@ -67,18 +67,25 @@ class MainWindow(QtWidgets.QMainWindow):
         
         #self.showMaximized()
 
-        #resize some widgets to fit the screen better
-        screen  = QtWidgets.QDesktopWidget().screenGeometry(-1)
-        
+        # Resize to the available viewport (excludes the macOS menu bar and Dock,
+        # and Windows taskbar). screenGeometry() previously used the full raw
+        # screen size, which pushed the bottom log widget below the visible
+        # area on machines where the menu bar / Dock actually took space.
+        screen = QtWidgets.QDesktopWidget().availableGeometry(-1)
+
         self.window_width = screen.width()
         self.window_height = screen.height()
         self.resize(self.window_width, self.window_height)
         self.display_width = self.window_width# self.ui.frameGeometry().width()
 
-        self.displayheightratio = 0.79
+        # Central-widget height budget. Video takes the lion's share, then the
+        # frame slider, then the log. Sum should be <~ 0.95 so the top Field
+        # Controls dock (capped at 240 px) has room without pushing the log
+        # off-screen. Old values (0.79/0.031/0.129 = 0.95) were tuned before
+        # the dock existed, so the log was clipped on smaller displays.
+        self.displayheightratio = 0.60
         self.framesliderheightratio = 0.031
-        self.textheightratio = .129
-        self.tabheightratio = 0.925
+        self.textheightratio = 0.14
         self.tabheightratio = 0.925
         
         self.aspectratio = 1041/801
@@ -209,7 +216,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Add the tabbed Field Controls dock. Docked to the top so the two
         # existing side docks (tracking / control) stay visible below it.
+        # Cap the height so it doesn't push the bottom log widget off-screen
+        # on smaller displays -- operators can still drag it larger or float
+        # it if they want more room.
         self.field_controls_dock = FieldControlsDock(self, CALIBRATION_PATH)
+        self.field_controls_dock.setMaximumHeight(240)
         self.addDockWidget(QtCore.Qt.TopDockWidgetArea, self.field_controls_dock)
 
         self.setFile()
