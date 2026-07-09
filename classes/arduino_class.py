@@ -85,6 +85,14 @@ class ArduinoHandler:
         else:
             message = self.conn.tx_obj(data)
             self.conn.send(message)
+            # macOS's serial driver buffers small writes and doesn't push them
+            # to the wire until the buffer fills. At the tracker's ~15 Hz send
+            # rate that never happens naturally, so the Arduino sees nothing
+            # even though every send() succeeds from Python's side. Force it.
+            try:
+                self.conn.connection.flush()
+            except Exception:
+                pass
             self.printer("Data Sent:  " + self.PACKET_LABEL + " = " + str(data))
 
     def send_field(self, Bx, By, Bz,
