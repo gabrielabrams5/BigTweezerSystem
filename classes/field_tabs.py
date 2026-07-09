@@ -206,25 +206,36 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         v.addLayout(test_row)
 
         self.gain_spinboxes = []
+        self.channel_spinboxes = []
         self._active_coil_idx = None  # index of the coil currently under Test
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(10)
-        grid.addWidget(QtWidgets.QLabel("<b>Coil</b>"), 0, 0)
-        grid.addWidget(QtWidgets.QLabel("<b>Gain</b>"), 0, 1)
+        grid.addWidget(QtWidgets.QLabel("<b>Coil</b>"),    0, 0)
+        grid.addWidget(QtWidgets.QLabel("<b>Gain</b>"),    0, 1)
+        grid.addWidget(QtWidgets.QLabel("<b>Driver</b>"),  0, 2)
         for i, label in enumerate(_COIL_LABELS):
             grid.addWidget(QtWidgets.QLabel(label), i + 1, 0)
+            # Gain spinbox: multiplies whatever the field synth commands for
+            # this logical coil. Auto-saved on every change.
             spin = _spinbox(-2, 2, 1.0, step=0.05, decimals=3)
-            # Live update: while this coil is under Test, any change to its
-            # gain immediately resends the current instead of waiting for
-            # another Test click.
             spin.valueChanged.connect(lambda _, idx=i: self._on_gain_changed(idx))
             grid.addWidget(spin, i + 1, 1)
+            self.gain_spinboxes.append(spin)
+            # Driver index (0..5): which physical Arduino driver channel this
+            # logical coil is wired to. Identity by default. Adjust when the
+            # coil-to-driver wiring is swapped in hardware.
+            drv = QtWidgets.QSpinBox()
+            drv.setRange(0, 5)
+            drv.setValue(i)
+            drv.valueChanged.connect(lambda _v, idx=i: self._on_channel_changed(idx))
+            grid.addWidget(drv, i + 1, 2)
+            self.channel_spinboxes.append(drv)
             btn = QtWidgets.QPushButton("Test")
             btn.clicked.connect(lambda _, idx=i: self._test_coil(idx))
-            grid.addWidget(btn, i + 1, 2)
-            self.gain_spinboxes.append(spin)
+            grid.addWidget(btn, i + 1, 3)
         v.addLayout(grid)
-        # Live update from the base strength spinbox too.
+        # Live update from the base strength spinbox too, and persist it as
+        # part of the state we care about.
         self.test_strength.valueChanged.connect(self._on_strength_changed)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -242,10 +253,14 @@ class FieldControlsDock(QtWidgets.QDockWidget):
 
         v.addStretch()
 
-        # Populate from currently-loaded gains on the arduino handler
+        # Populate from currently-loaded gains and channel map on the arduino handler
         for spin, g in zip(self.gain_spinboxes, self.main.arduino1.coil_gains):
             spin.blockSignals(True)
             spin.setValue(float(g))
+            spin.blockSignals(False)
+        for spin, c in zip(self.channel_spinboxes, self.main.arduino1.channel_map):
+            spin.blockSignals(True)
+            spin.setValue(int(c))
             spin.blockSignals(False)
         return page
 
@@ -274,37 +289,71 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         self._fire_active_coil()
 
     def _on_gain_changed(self, idx):
-        # Only forward to the wire while the operator is calibrating this coil.
+        # Push the change to the arduino handler immediately so subsequent
+        # normal-mode sends (from apply_actions) use it, and auto-save to
+        # disk so a force-quit doesn't lose the calibration.
+        self.main.arduino1.coil_gains = [float(s.value()) for s in self.gain_spinboxes]
+        self._autosave()
+        # Live-preview: if this coil is currently under Test, re-fire.
         if self._active_coil_idx == idx:
+            self._fire_active_coil()
+
+    def _on_channel_changed(self, _idx):
+        # Update the arduino handler's channel_map. Reject non-permutations
+        # so we don't send garbage; UI keeps whatever the operator typed.
+        cmap = [int(s.value()) for s in self.channel_spinboxes]
+        if sorted(cmap) == [0, 1, 2, 3, 4, 5]:
+            self.main.arduino1.channel_map = cmap
+            self._autosave()
+        # If mid-Test, re-fire so the physical coil follows the new map.
+        if self._active_coil_idx is not None:
             self._fire_active_coil()
 
     def _on_strength_changed(self, _value=None):
         # Base strength affects whichever coil is active.
         self._fire_active_coil()
 
+    def _autosave(self):
+        gains = [float(s.value()) for s in self.gain_spinboxes]
+        cmap = [int(s.value()) for s in self.channel_spinboxes]
+        if sorted(cmap) != [0, 1, 2, 3, 4, 5]:
+            # Don't persist a broken map; wait for the operator to fix it.
+            cmap = None
+        try:
+            field_synth.save_calibration(self.calibration_path, gains, cmap)
+        except (OSError, ValueError):
+            pass
+
     def _stop_all(self):
         self._active_coil_idx = None
         self.main.arduino1.send([0.0] * 6, 0.0)
 
     def _save_and_apply(self):
-        gains = [float(s.value()) for s in self.gain_spinboxes]
-        self.main.arduino1.coil_gains = gains
-        try:
-            field_synth.save_gains(self.calibration_path, gains)
-            self.main.tbprint(f"Calibration saved to {self.calibration_path}")
-        except OSError as e:
-            self.main.tbprint(f"Failed to save calibration: {e}")
+        # Kept for muscle memory. Auto-save on change already covers this.
+        self._autosave()
+        self.main.tbprint(f"Calibration saved to {self.calibration_path}")
 
     def _reload(self):
         gains = field_synth.load_gains(self.calibration_path)
-        if gains is None:
+        cmap = field_synth.load_channel_map(self.calibration_path)
+        if gains is None and cmap is None:
             self.main.tbprint(f"No calibration file at {self.calibration_path}")
             return
-        for spin, g in zip(self.gain_spinboxes, gains):
-            spin.blockSignals(True); spin.setValue(float(g)); spin.blockSignals(False)
-        self.main.arduino1.coil_gains = gains
+        if gains is not None:
+            for spin, g in zip(self.gain_spinboxes, gains):
+                spin.blockSignals(True); spin.setValue(float(g)); spin.blockSignals(False)
+            self.main.arduino1.coil_gains = gains
+        if cmap is not None:
+            for spin, c in zip(self.channel_spinboxes, cmap):
+                spin.blockSignals(True); spin.setValue(int(c)); spin.blockSignals(False)
+            self.main.arduino1.channel_map = cmap
         self.main.tbprint(f"Calibration reloaded from {self.calibration_path}")
 
     def _reset(self):
         for spin in self.gain_spinboxes:
             spin.blockSignals(True); spin.setValue(1.0); spin.blockSignals(False)
+        for i, spin in enumerate(self.channel_spinboxes):
+            spin.blockSignals(True); spin.setValue(i); spin.blockSignals(False)
+        self.main.arduino1.coil_gains = [1.0] * 6
+        self.main.arduino1.channel_map = [0, 1, 2, 3, 4, 5]
+        self._autosave()

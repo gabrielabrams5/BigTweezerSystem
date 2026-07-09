@@ -224,6 +224,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if gains is not None:
             self.arduino1.coil_gains = gains
             self.tbprint(f"Loaded calibration from {CALIBRATION_PATH}")
+        cmap = field_synth.load_channel_map(CALIBRATION_PATH)
+        if cmap is not None:
+            self.arduino1.channel_map = cmap
+            self.tbprint(f"Loaded channel map: {cmap}")
 
         # Add the tabbed Field Controls dock. Docked to the top so the two
         # existing side docks (tracking / control) stay visible below it.

@@ -28,11 +28,12 @@ class ArduinoHandler:
         self.conn = None
         self.port = None
         self.printer = printer
-        # Per-coil calibration gains applied to any send(). Owned here so
-        # the calibration tab has one obvious place to write. Default 1.0
-        # is neutral. Negative values invert an individual coil's polarity
-        # (fix for a coil wound backward at build time).
+        # Per-coil calibration gains applied to any send(). Default 1.0 is
+        # neutral. Negative values invert an individual coil's polarity.
         self.coil_gains = [1.0] * 6
+        # Channel permutation: channel_map[i] = which physical driver logical
+        # coil i is wired to. Default identity. Set from calibration.json.
+        self.channel_map = [0, 1, 2, 3, 4, 5]
 
     def connect(self, port) -> None:
         """Open a SerialTransfer connection. Idempotent and non-fatal on failure."""
@@ -77,9 +78,17 @@ class ArduinoHandler:
         if len(currents) != 6:
             self.printer(f"send: expected 6 currents, got {len(currents)}")
             return
+        # 1) Apply per-coil gains + clamp
         currents = [max(-1.0, min(1.0, float(c) * float(g)))
                     for c, g in zip(currents, self.coil_gains)]
-        data = [round(c, 3) for c in currents] + [float(acoustic_freq)]
+        # 2) Route through the channel map so a wiring swap between the
+        #    Arduino driver channels and physical coil positions is
+        #    corrected in software. currents[i] is the *logical* current for
+        #    coil i; sent[channel_map[i]] is the physical wire it goes to.
+        sent = [0.0] * 6
+        for i in range(6):
+            sent[self.channel_map[i]] = currents[i]
+        data = [round(c, 3) for c in sent] + [float(acoustic_freq)]
         if self.conn is None:
             self.printer("No Connection:  " + self.PACKET_LABEL + " = " + str(data))
         else:

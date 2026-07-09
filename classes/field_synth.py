@@ -165,23 +165,34 @@ def default_gains() -> list:
     return [1.0] * 6
 
 
-def load_gains(path: str) -> list | None:
-    """Return the six calibration gains from calibration.json, or None if missing/invalid.
+def default_channel_map() -> list:
+    """Identity map: logical coil i -> physical driver i. Override in
+    calibration.json if the rig's wiring routes a driver output to a
+    different physical coil position."""
+    return [0, 1, 2, 3, 4, 5]
 
-    The file format is::
 
-        { "coil_gains": [g1, g2, g3, g4, g5, g6] }
-
-    Negative gains are allowed -- they flip the H-bridge polarity for a
-    coil that turned out to be wound backward. Zero is allowed but silences
-    that coil.
-    """
+def _read_calibration(path):
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r") as f:
-            data = json.load(f)
+            return json.load(f)
     except (OSError, ValueError):
+        return None
+
+
+def load_gains(path: str):
+    """Return the six calibration gains, or None if missing/invalid.
+    File format (both fields optional; missing fields fall back to defaults)::
+
+        { "coil_gains": [g1..g6], "channel_map": [c1..c6] }
+
+    Negative gains flip H-bridge polarity for a coil wound backward. Zero
+    silences that coil.
+    """
+    data = _read_calibration(path)
+    if data is None:
         return None
     g = data.get("coil_gains")
     if not isinstance(g, list) or len(g) != 6:
@@ -192,9 +203,42 @@ def load_gains(path: str) -> list | None:
         return None
 
 
-def save_gains(path: str, gains: Iterable[float]) -> None:
+def load_channel_map(path: str):
+    """Return the six-entry driver permutation. channel_map[i] = which
+    physical driver logical coil i is wired to. Default identity if the
+    file has no channel_map field.
+    """
+    data = _read_calibration(path)
+    if data is None:
+        return None
+    m = data.get("channel_map")
+    if not isinstance(m, list) or len(m) != 6:
+        return None
+    try:
+        m = [int(x) for x in m]
+    except (TypeError, ValueError):
+        return None
+    if sorted(m) != [0, 1, 2, 3, 4, 5]:
+        # Not a valid permutation of 0..5; refuse silently.
+        return None
+    return m
+
+
+def save_calibration(path: str, gains, channel_map=None) -> None:
+    """Save both gains and channel_map (optional) to calibration.json."""
     g = list(gains)
     if len(g) != 6:
         raise ValueError(f"expected 6 gains, got {len(g)}")
+    payload = {"coil_gains": [float(x) for x in g]}
+    if channel_map is not None:
+        m = [int(x) for x in channel_map]
+        if len(m) != 6 or sorted(m) != [0, 1, 2, 3, 4, 5]:
+            raise ValueError(f"channel_map must be a permutation of 0..5, got {m}")
+        payload["channel_map"] = m
     with open(path, "w") as f:
-        json.dump({"coil_gains": [float(x) for x in g]}, f, indent=2)
+        json.dump(payload, f, indent=2)
+
+
+# Backwards-compat alias used by earlier code paths.
+def save_gains(path: str, gains: Iterable[float]) -> None:
+    save_calibration(path, gains)
