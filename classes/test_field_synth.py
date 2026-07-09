@@ -155,32 +155,49 @@ def test_roll_zero_axis_returns_zero():
 
 # ---------------------------------------------------------------- synthesize
 
-def test_synthesize_uniform_only():
-    I = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0)
+def test_synthesize_uniform_only_signed():
+    I = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0,
+                      pull_only=False)
     assert np.allclose(I[:3],  0.2357, atol=1e-3)
     assert np.allclose(I[3:], -0.2357, atol=1e-3)
 
 
+def test_synthesize_pull_only_clips_negatives_to_zero():
+    """Under pull-only physics, negative currents that would attract the bead
+    the wrong way are clipped to zero."""
+    I = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0,
+                      pull_only=True)
+    assert np.allclose(I[:3], 0.2357, atol=1e-3)
+    assert np.allclose(I[3:], 0.0, atol=1e-9)
+
+
 def test_synthesize_clamps():
-    """A huge target gets clamped to [-1, 1] per coil."""
-    I = fs.synthesize([0, 0, 100], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0)
-    assert np.all(I <= 1.0 + 1e-12)
-    assert np.all(I >= -1.0 - 1e-12)
+    """A huge target gets clamped."""
+    I_pull = fs.synthesize([0, 0, 100], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
+                           t=0.0, pull_only=True)
+    assert np.all(I_pull <= 1.0 + 1e-12)
+    assert np.all(I_pull >= 0.0 - 1e-12)
+    I_signed = fs.synthesize([0, 0, 100], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
+                             t=0.0, pull_only=False)
+    assert np.all(I_signed <= 1.0 + 1e-12)
+    assert np.all(I_signed >= -1.0 - 1e-12)
 
 
 def test_synthesize_applies_gains():
     """Per-coil gains scale the currents post-superposition."""
-    I_ungained = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0)
+    I_ungained = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
+                               t=0.0, pull_only=False)
     gains = [0.5, 1.0, 1.0, 1.0, 1.0, -1.0]
-    I_gained = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0, t=0.0,
-                             gains=gains)
+    I_gained = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
+                             t=0.0, gains=gains, pull_only=False)
     assert I_gained[0] == pytest.approx(0.5 * I_ungained[0])
     assert I_gained[5] == pytest.approx(-1.0 * I_ungained[5])
 
 
 def test_synthesize_gradient_direction_z_is_asymmetric():
-    """+Z gradient asymmetrizes top vs bottom."""
-    I = fs.synthesize([0, 0, 0], [0, 0, 1], 0.5, [0, 0, 1], 0.0, t=0.0)
+    """+Z gradient asymmetrizes top vs bottom (raw math, signed mode)."""
+    I = fs.synthesize([0, 0, 0], [0, 0, 1], 0.5, [0, 0, 1], 0.0, t=0.0,
+                      pull_only=False)
     assert np.all(I[:3] > 0)
     assert np.all(I[3:] < 0)
 

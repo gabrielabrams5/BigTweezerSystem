@@ -140,14 +140,30 @@ def roll_currents(base_B: Iterable[float], axis: Iterable[float],
     return uniform_currents(R @ base) - uniform_currents(base)
 
 
+#: Set True when the physical rig can only attract (electromagnet + paramagnetic
+#: bead, or ferromagnetic core in any polarity). Under pull-only physics, negative
+#: currents from the pseudoinverse produce field in the "reverse" direction which
+#: still attracts the bead toward that coil -- i.e. yanks it *away* from the
+#: commanded direction. Clipping negatives to zero drops those wasted /
+#: counter-productive contributions; only the coils whose axes have a positive
+#: projection on the target direction actually fire.
+PULL_ONLY = True
+
+
 def synthesize(uniform_B: Iterable[float],
                gradient_dir: Iterable[float],
                gradient_mag: float,
                roll_axis: Iterable[float],
                roll_freq_hz: float,
                t: float,
-               gains: Iterable[float] | None = None) -> np.ndarray:
-    """Full pipeline: uniform + gradient + roll, times per-coil gains, clamped."""
+               gains: Iterable[float] | None = None,
+               pull_only: bool | None = None) -> np.ndarray:
+    """Full pipeline: uniform + gradient + roll, times per-coil gains, clamped.
+
+    When pull_only (default = PULL_ONLY = True), negative currents are floored
+    to zero. On rigs whose electromagnets only attract paramagnetic beads,
+    a "negative" current on a coil would pull the bead *toward* that coil
+    (opposite of commanded direction), so we drop those contributions."""
     I = (uniform_currents(uniform_B)
          + gradient_currents(gradient_dir, gradient_mag)
          + roll_currents(uniform_B, roll_axis, roll_freq_hz, t))
@@ -156,6 +172,8 @@ def synthesize(uniform_B: Iterable[float],
         if g.shape != (6,):
             raise ValueError(f"gains must have shape (6,), got {g.shape}")
         I = I * g
+    if pull_only if pull_only is not None else PULL_ONLY:
+        return np.clip(I, 0.0, 1.0)
     return np.clip(I, -1.0, 1.0)
 
 

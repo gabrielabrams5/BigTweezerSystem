@@ -70,16 +70,20 @@ class ArduinoHandler:
     def send(self, currents: Sequence[float], acoustic_freq: float = 0.0) -> None:
         """Send the 7-float packet: 6 signed coil currents + acoustic freq.
 
-        Applies self.coil_gains element-wise, then clamps to [-1, 1]. Passing
-        pre-calibrated currents from the caller is fine (gains default to
-        1.0 so this is a no-op unless the calibration tab changed them).
+        Applies self.coil_gains element-wise, then clamps. Range depends on
+        field_synth.PULL_ONLY: under pull-only rigs we clip to [0, 1] so
+        negative-gain-flipped currents don't try to reverse polarity (which
+        would still attract the paramagnetic bead toward that coil).
         """
         currents = list(currents)
         if len(currents) != 6:
             self.printer(f"send: expected 6 currents, got {len(currents)}")
             return
+        # Late import to avoid a circular hard-dep at import time.
+        from classes.field_synth import PULL_ONLY
+        lo = 0.0 if PULL_ONLY else -1.0
         # 1) Apply per-coil gains + clamp
-        currents = [max(-1.0, min(1.0, float(c) * float(g)))
+        currents = [max(lo, min(1.0, float(c) * float(g)))
                     for c, g in zip(currents, self.coil_gains)]
         # 2) Route through the channel map so a wiring swap between the
         #    Arduino driver channels and physical coil positions is
