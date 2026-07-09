@@ -1480,6 +1480,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.VideoFeedLabel.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.ui.VideoFeedLabel.setMinimumSize(320, 240)
+        # Center any letterbox instead of leaving the pixmap top-left inside a
+        # larger black area, which looked like "a black bar next to the video".
+        self.ui.VideoFeedLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.VideoFeedLabel.setScaledContents(False)
 
         bottom_widget = QtWidgets.QWidget()
         bv = QtWidgets.QVBoxLayout(bottom_widget)
