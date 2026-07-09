@@ -243,11 +243,23 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         return page
 
     def _test_coil(self, idx):
+        """Live-preview a single-coil drive at the operator's current gain.
+
+        Multiplies the base test strength by the spinbox value so the
+        operator gets immediate visual/magnetometer feedback when tuning
+        the gain -- previously they had to click Save + Apply first, which
+        was a hidden step. Temporarily neutralize arduino1.coil_gains so
+        we don't double-multiply if the operator already saved earlier."""
         strength = float(self.test_strength.value())
-        currents = [0.0] * 6
-        currents[idx] = strength
-        # Bypass field_synth so the operator is measuring one coil in isolation
-        self.main.arduino1.send(currents, 0.0)
+        gain = float(self.gain_spinboxes[idx].value())
+        saved = list(self.main.arduino1.coil_gains)
+        self.main.arduino1.coil_gains = [1.0] * 6
+        try:
+            currents = [0.0] * 6
+            currents[idx] = strength * gain
+            self.main.arduino1.send(currents, 0.0)
+        finally:
+            self.main.arduino1.coil_gains = saved
 
     def _stop_all(self):
         self.main.arduino1.send([0.0] * 6, 0.0)
