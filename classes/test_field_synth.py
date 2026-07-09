@@ -163,57 +163,52 @@ def test_synthesize_uniform_only_signed():
 
 
 def test_synthesize_pull_only_direct_formula_per_axis():
-    """Under pull-only physics, I_i = max(0, n_i . B). +Z fires only top ring
-    at sqrt(2)/2; -Z fires only bottom ring at sqrt(2)/2; +X fires C1+C4 at
-    sqrt(2)/2 with the other four silent; +Y fires C2+C5 at sqrt(6)/4 with
-    C1+C4 silent and C3+C6 silent (their Y projection is negative)."""
-    s = np.sqrt(2) / 2
-
+    """Under pull-only physics with the peak normalization, the strongest
+    coil(s) always saturate at |B_target|. On-axis commands (+X, +Y, +Z)
+    fire two or four coils at 1.0; opposing coils are silent."""
     I_pz = fs.synthesize([0, 0, 1], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
                          t=0.0, pull_only=True)
-    assert np.allclose(I_pz[:3], s, atol=1e-9)
+    assert np.allclose(I_pz[:3], 1.0, atol=1e-9)
     assert np.allclose(I_pz[3:], 0.0, atol=1e-9)
 
     I_nz = fs.synthesize([0, 0, -1], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
                          t=0.0, pull_only=True)
     assert np.allclose(I_nz[:3], 0.0, atol=1e-9)
-    assert np.allclose(I_nz[3:], s, atol=1e-9)
+    assert np.allclose(I_nz[3:], 1.0, atol=1e-9)
 
     I_px = fs.synthesize([1, 0, 0], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
                          t=0.0, pull_only=True)
-    assert I_px[0] == pytest.approx(s, abs=1e-9)
-    assert I_px[3] == pytest.approx(s, abs=1e-9)
+    assert I_px[0] == pytest.approx(1.0, abs=1e-9)
+    assert I_px[3] == pytest.approx(1.0, abs=1e-9)
     assert np.allclose([I_px[1], I_px[2], I_px[4], I_px[5]], 0.0, atol=1e-9)
 
-    y_amp = np.sqrt(6) / 4  # sin(45) * sin(120) = (sqrt(2)/2)*(sqrt(3)/2)
+    # +Y: only C2 and C5 have +Y projections. Peak normalization scales them
+    # to 1.0 each.
     I_py = fs.synthesize([0, 1, 0], [0, 0, 0], 0.0, [0, 0, 1], 0.0,
                          t=0.0, pull_only=True)
-    assert I_py[1] == pytest.approx(y_amp, abs=1e-9)
-    assert I_py[4] == pytest.approx(y_amp, abs=1e-9)
+    assert I_py[1] == pytest.approx(1.0, abs=1e-9)
+    assert I_py[4] == pytest.approx(1.0, abs=1e-9)
     assert np.allclose([I_py[0], I_py[2], I_py[3], I_py[5]], 0.0, atol=1e-9)
 
 
 def test_synthesize_pull_only_rolling_traverses_ring():
     """Rolling under pull-only: rotate B_base = +X around z axis at 1 Hz.
-    At t=0 the commanded field is +X; a quarter period later it's +Y; and
-    so on. The active coils cycle through the ring accordingly."""
+    Peak-normalized: at each quarter turn the active coils saturate at 1.0."""
     B_base = [1, 0, 0]
     axis = [0, 0, 1]
     freq = 1.0
-    s = np.sqrt(2) / 2
-    y_amp = np.sqrt(6) / 4
 
     I_t0 = fs.synthesize(B_base, [0, 0, 0], 0.0, axis, freq, t=0.0,
                         pull_only=True)
     # At t=0: same as static +X pattern
-    assert I_t0[0] == pytest.approx(s, abs=1e-9)
-    assert I_t0[3] == pytest.approx(s, abs=1e-9)
+    assert I_t0[0] == pytest.approx(1.0, abs=1e-9)
+    assert I_t0[3] == pytest.approx(1.0, abs=1e-9)
 
     I_t_q = fs.synthesize(B_base, [0, 0, 0], 0.0, axis, freq, t=0.25,
                           pull_only=True)
     # Quarter period: rotated to +Y pattern (C2 + C5)
-    assert I_t_q[1] == pytest.approx(y_amp, abs=1e-9)
-    assert I_t_q[4] == pytest.approx(y_amp, abs=1e-9)
+    assert I_t_q[1] == pytest.approx(1.0, abs=1e-9)
+    assert I_t_q[4] == pytest.approx(1.0, abs=1e-9)
     assert np.allclose([I_t_q[0], I_t_q[2], I_t_q[3], I_t_q[5]], 0.0, atol=1e-9)
 
 

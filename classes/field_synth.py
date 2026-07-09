@@ -150,14 +150,19 @@ PULL_ONLY = True
 
 
 def pull_only_currents(B_target: Iterable[float]) -> np.ndarray:
-    """Fire each coil proportional to max(0, n_i . B_target). This is the
-    direct formula for attracting a paramagnetic bead toward B_target's
-    direction: only coils whose axes point *toward* that direction fire,
-    and their strength scales with how well they're aligned. No opposing
-    coil "cancels" another's pull -- the total force always adds toward
-    B_target."""
+    """Fire each coil proportional to max(0, n_i . B_target), normalized so
+    the strongest coil hits |B_target| (i.e. 1.0 when the operator commands
+    a unit-magnitude direction). Without normalization every coil axis's
+    45 deg tilt from vertical caps peak current at sqrt(2)/2 ~= 0.707;
+    the operator would never see 100% duty. Post-normalization the joystick
+    "full send" saturates the strongest coils regardless of which
+    direction B_target points."""
     B = np.asarray(B_target, dtype=float).reshape(3)
-    return np.maximum(COIL_AXES.T @ B, 0.0)
+    raw = np.maximum(COIL_AXES.T @ B, 0.0)
+    peak = float(raw.max())
+    if peak < 1e-9:
+        return raw
+    return raw * (float(np.linalg.norm(B)) / peak)
 
 
 def synthesize(uniform_B: Iterable[float],
