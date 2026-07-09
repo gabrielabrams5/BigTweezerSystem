@@ -535,16 +535,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def _sync_new_state(self):
-        """Bridge the legacy Bx/By/Bz/freq/gradient_status scratch vars into the
-        new field_synth-facing state (uniform_B, gradient_*, roll_*).
-        Step 6 replaces the legacy inputs with dedicated widgets; until then
-        this bridge keeps both models coherent."""
-        self.uniform_B = np.array([float(self.Bx), float(self.By), float(self.Bz)])
-        self.gradient_mag = self.gradient_scale if self.gradient_status else 0.0
-        self.roll_freq = float(self.freq)
-        self.roll_on = self.roll_freq > 1e-9
-        # roll_axis + gradient_dir stay at their previous values (Step 6 exposes
-        # them as GUI-editable spinboxes). Default is +z for both.
+        """Fold legacy Bx/By/Bz/freq/gradient_status scratch vars into the new
+        field_synth-facing state (uniform_B, gradient_*, roll_*), BUT only when
+        one of the legacy modes is actually driving them. When no legacy mode
+        is active, the Field & Gradient tab / Rotation tab own uniform_B /
+        gradient_mag / roll_axis / roll_freq directly and this bridge stays
+        out of the way."""
+        any_legacy_active = (
+            self.control_status or self.joystick_status
+            or self.manual_status or self.excel_actions_status
+        )
+        if any_legacy_active:
+            self.uniform_B = np.array([float(self.Bx), float(self.By), float(self.Bz)])
+            self.gradient_mag = self.gradient_scale if self.gradient_status else 0.0
+            self.roll_freq = float(self.freq)
+            self.roll_on = self.roll_freq > 1e-9
+        # Otherwise the tabs' direct writes to self.uniform_B / .gradient_mag /
+        # .roll_freq / .roll_axis stay authoritative.
 
     def apply_actions(self, status):
         """Push the current field-synth state to the Arduino.

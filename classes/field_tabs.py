@@ -142,6 +142,10 @@ class FieldControlsDock(QtWidgets.QDockWidget):
             self.gdx.value(), self.gdy.value(), self.gdz.value()
         ])
         self.main.gradient_mag = float(self.gmag.value())
+        # Push to the wire immediately -- otherwise nothing goes out until the
+        # tracker thread's next actions_signal frame, and if Track isn't on
+        # yet the tab looks completely dead.
+        self.main.apply_actions(True)
 
     # -------------------------------------------------------- Rotation tab
     def _build_rotation_tab(self):
@@ -181,6 +185,10 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         ])
         self.main.roll_freq = float(self.freq.value()) if self.roll_on.isChecked() else 0.0
         self.main.roll_on = self.roll_on.isChecked()
+        # Push to the wire even when Track isn't running -- roll needs a
+        # per-frame packet stream for the field to actually precess. When
+        # Track is running the tracker's actions_signal takes over.
+        self.main.apply_actions(True)
 
     # ---------------------------------------------------- Calibration tab
     def _build_calibration_tab(self):
