@@ -777,8 +777,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def convert_coords(self,pos):
         #need a way to convert the video position of mouse to the actually coordinate in the window
-        newx = int(pos.x() * (self.video_width / self.display_width)) 
-        newy = int(pos.y() * (self.video_height / self.display_height))
+        dw = max(self.ui.VideoFeedLabel.width(), 1)
+        dh = max(self.ui.VideoFeedLabel.height(), 1)
+        newx = int(pos.x() * (self.video_width / dw))
+        newy = int(pos.y() * (self.video_height / dh))
         return newx, newy
     
     
@@ -935,7 +937,14 @@ class MainWindow(QtWidgets.QMainWindow):
       
         bytes_per_line = ch * w
         convert_to_Qt_format = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
-        p = convert_to_Qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
+        # Scale to the actual current label size instead of the pre-layout
+        # display_width/height. The QSplitter drives label size now, so we
+        # just read it every frame.
+        target_w = max(self.ui.VideoFeedLabel.width(), 320)
+        target_h = max(self.ui.VideoFeedLabel.height(), 240)
+        self.display_width = target_w
+        self.display_height = target_h
+        p = convert_to_Qt_format.scaled(target_w, target_h, Qt.KeepAspectRatio)
         qt_img = QPixmap.fromImage(p)
        
         #update frame slider too
@@ -1110,7 +1119,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.robotvelocityunitslabel.setText("px/s")
             self.totalnumframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.tbprint("Total Frames: {} ".format(self.totalnumframes))
-            self.ui.frameslider.setGeometry(QtCore.QRect(10, self.display_height+12, self.display_width, 20))
+            # frameslider is in the QSplitter's bottom vbox now; layout drives
+            # its geometry, so we only need to set the range and show/hide.
             self.ui.frameslider.setMaximum(self.totalnumframes)
             self.ui.frameslider.show()
         
@@ -1417,6 +1427,9 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(scroll)
 
     def _retrofit_left_dock(self):
+        # The cropped-view label is a fixed 310x310 QLabel that a matplotlib
+        # canvas parents onto; lock its size the same way as the sim label.
+        self.ui.CroppedVideoFeedLabel.setFixedSize(310, 310)
         children = [
             self.ui.frame_3,
             self.ui.trackerparamsframe,
@@ -1429,6 +1442,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._wrap_in_scroll(self.ui.dockWidgetContents, children)
 
     def _retrofit_right_dock(self):
+        # The simulation label hosts a 310x310 matplotlib canvas as a child.
+        # Fix its size so the canvas doesn't distort when the vbox tries to
+        # stretch it.
+        self.ui.magneticfieldsimlabel.setFixedSize(310, 310)
         children = [
             self.ui.frame,           # modes + acoustic + Excel actions
             self.ui.frame_2,         # manual field + alpha + shape maker
