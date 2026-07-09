@@ -206,6 +206,7 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         v.addLayout(test_row)
 
         self.gain_spinboxes = []
+        self._active_coil_idx = None  # index of the coil currently under Test
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.addWidget(QtWidgets.QLabel("<b>Coil</b>"), 0, 0)
@@ -213,12 +214,18 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         for i, label in enumerate(_COIL_LABELS):
             grid.addWidget(QtWidgets.QLabel(label), i + 1, 0)
             spin = _spinbox(-2, 2, 1.0, step=0.05, decimals=3)
+            # Live update: while this coil is under Test, any change to its
+            # gain immediately resends the current instead of waiting for
+            # another Test click.
+            spin.valueChanged.connect(lambda _, idx=i: self._on_gain_changed(idx))
             grid.addWidget(spin, i + 1, 1)
             btn = QtWidgets.QPushButton("Test")
             btn.clicked.connect(lambda _, idx=i: self._test_coil(idx))
             grid.addWidget(btn, i + 1, 2)
             self.gain_spinboxes.append(spin)
         v.addLayout(grid)
+        # Live update from the base strength spinbox too.
+        self.test_strength.valueChanged.connect(self._on_strength_changed)
 
         btn_row = QtWidgets.QHBoxLayout()
         b_save = QtWidgets.QPushButton("Save + Apply")
@@ -242,16 +249,16 @@ class FieldControlsDock(QtWidgets.QDockWidget):
             spin.blockSignals(False)
         return page
 
-    def _test_coil(self, idx):
-        """Live-preview a single-coil drive at the operator's current gain.
-
-        Multiplies the base test strength by the spinbox value so the
-        operator gets immediate visual/magnetometer feedback when tuning
-        the gain -- previously they had to click Save + Apply first, which
-        was a hidden step. Temporarily neutralize arduino1.coil_gains so
-        we don't double-multiply if the operator already saved earlier."""
+    def _fire_active_coil(self):
+        """Send strength * gain on whichever coil is currently under Test.
+        Called from Test click and from any live spinbox edit."""
+        idx = self._active_coil_idx
+        if idx is None:
+            return
         strength = float(self.test_strength.value())
         gain = float(self.gain_spinboxes[idx].value())
+        # Temporarily neutralize arduino1.coil_gains so we don't double-multiply
+        # if the operator has already saved a set of gains earlier.
         saved = list(self.main.arduino1.coil_gains)
         self.main.arduino1.coil_gains = [1.0] * 6
         try:
@@ -261,7 +268,22 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         finally:
             self.main.arduino1.coil_gains = saved
 
+    def _test_coil(self, idx):
+        """Click handler for a Test button. Set the active coil, then fire."""
+        self._active_coil_idx = idx
+        self._fire_active_coil()
+
+    def _on_gain_changed(self, idx):
+        # Only forward to the wire while the operator is calibrating this coil.
+        if self._active_coil_idx == idx:
+            self._fire_active_coil()
+
+    def _on_strength_changed(self, _value=None):
+        # Base strength affects whichever coil is active.
+        self._fire_active_coil()
+
     def _stop_all(self):
+        self._active_coil_idx = None
         self.main.arduino1.send([0.0] * 6, 0.0)
 
     def _save_and_apply(self):
