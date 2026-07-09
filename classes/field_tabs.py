@@ -299,12 +299,19 @@ class FieldControlsDock(QtWidgets.QDockWidget):
             self._fire_active_coil()
 
     def _on_channel_changed(self, _idx):
-        # Update the arduino handler's channel_map. Reject non-permutations
-        # so we don't send garbage; UI keeps whatever the operator typed.
+        # Apply whatever the operator has typed, immediately -- previously we
+        # refused to apply non-permutations, which silently blocked every
+        # intermediate keystroke when editing multiple rows.
         cmap = [int(s.value()) for s in self.channel_spinboxes]
-        if sorted(cmap) == [0, 1, 2, 3, 4, 5]:
-            self.main.arduino1.channel_map = cmap
-            self._autosave()
+        self.main.arduino1.channel_map = cmap
+        # Warn (in the log) if the map isn't a valid permutation, because in
+        # normal mode two logical coils will double up on the same driver.
+        # Single-coil tests still work fine with duplicates.
+        if sorted(cmap) != [0, 1, 2, 3, 4, 5]:
+            self.main.tbprint(
+                f"Warning: channel map {cmap} is not a permutation of 0..5"
+            )
+        self._autosave()
         # If mid-Test, re-fire so the physical coil follows the new map.
         if self._active_coil_idx is not None:
             self._fire_active_coil()
@@ -316,9 +323,9 @@ class FieldControlsDock(QtWidgets.QDockWidget):
     def _autosave(self):
         gains = [float(s.value()) for s in self.gain_spinboxes]
         cmap = [int(s.value()) for s in self.channel_spinboxes]
-        if sorted(cmap) != [0, 1, 2, 3, 4, 5]:
-            # Don't persist a broken map; wait for the operator to fix it.
-            cmap = None
+        # Persist whatever the operator has typed, valid permutation or not.
+        # Load-side check keeps a broken map from breaking startup; here we
+        # just don't lose their in-progress work.
         try:
             field_synth.save_calibration(self.calibration_path, gains, cmap)
         except (OSError, ValueError):

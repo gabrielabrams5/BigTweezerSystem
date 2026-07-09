@@ -225,15 +225,17 @@ def load_channel_map(path: str):
 
 
 def save_calibration(path: str, gains, channel_map=None) -> None:
-    """Save both gains and channel_map (optional) to calibration.json."""
+    """Save both gains and channel_map (optional) to calibration.json.
+    channel_map is accepted as any six-tuple of ints in 0..5; permutation
+    validation happens at load time only, so mid-edit state isn't lost."""
     g = list(gains)
     if len(g) != 6:
         raise ValueError(f"expected 6 gains, got {len(g)}")
     payload = {"coil_gains": [float(x) for x in g]}
     if channel_map is not None:
         m = [int(x) for x in channel_map]
-        if len(m) != 6 or sorted(m) != [0, 1, 2, 3, 4, 5]:
-            raise ValueError(f"channel_map must be a permutation of 0..5, got {m}")
+        if len(m) != 6:
+            raise ValueError(f"channel_map must have 6 entries, got {len(m)}")
         payload["channel_map"] = m
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
