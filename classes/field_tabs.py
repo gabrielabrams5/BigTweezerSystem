@@ -71,15 +71,25 @@ class FieldControlsDock(QtWidgets.QDockWidget):
         )
 
         tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_field_tab(),       "Field && Gradient")
-        tabs.addTab(self._build_rotation_tab(),    "Rotation")
-        tabs.addTab(self._build_calibration_tab(), "Calibration")
+        tabs.addTab(self._scroll(self._build_field_tab()),       "Field && Gradient")
+        tabs.addTab(self._scroll(self._build_rotation_tab()),    "Rotation")
+        tabs.addTab(self._scroll(self._build_calibration_tab()), "Calibration")
 
         wrapper = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(wrapper)
         outer.setContentsMargins(4, 4, 4, 4)
         outer.addWidget(tabs)
         self.setWidget(wrapper)
+
+    def _scroll(self, page):
+        """Wrap a tab page in a QScrollArea so overflow scrolls instead of
+        clipping. Fixes the calibration tab getting cut off inside a
+        capped-height dock."""
+        area = QtWidgets.QScrollArea()
+        area.setWidget(page)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        return area
 
     # ----------------------------------------------------------- Field tab
     def _build_field_tab(self):

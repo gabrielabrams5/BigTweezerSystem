@@ -66,8 +66,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # the main window below ~1000 px tall -- worse than the available
         # viewport on most MacBook screens. Relax them so the window can
         # actually be resized.
-        self.ui.dockWidget.setMinimumSize(QtCore.QSize(200, 300))
-        self.ui.dockWidget_2.setMinimumSize(QtCore.QSize(200, 300))
+        # Relax the .ui-generated dock minimums (329x987 and 411x1000) so
+        # the main window can shrink to a laptop viewport. The inner
+        # QScrollArea installed in _retrofit_*_dock handles the actual
+        # content overflow.
+        self.ui.dockWidget.setMinimumSize(QtCore.QSize(280, 280))
+        self.ui.dockWidget_2.setMinimumSize(QtCore.QSize(280, 280))
 
         
 
@@ -79,25 +83,24 @@ class MainWindow(QtWidgets.QMainWindow):
         # and Windows taskbar). screenGeometry() previously used the full raw
         # screen size, which pushed the bottom log widget below the visible
         # area on machines where the menu bar / Dock actually took space.
-        screen = QtWidgets.QDesktopWidget().availableGeometry(-1)
-
-        self.window_width = screen.width()
-        self.window_height = screen.height()
+        # Cap startup size to a laptop-friendly viewport (external monitors
+        # can be 4K but that just balloons the window). Set an explicit
+        # minimum so the operator can't accidentally shrink to unusability.
+        avail = QtWidgets.QDesktopWidget().availableGeometry(-1)
+        self.window_width = min(avail.width(), 1500)
+        self.window_height = min(avail.height(), 900)
         self.resize(self.window_width, self.window_height)
-        self.display_width = self.window_width# self.ui.frameGeometry().width()
+        self.setMinimumSize(QtCore.QSize(900, 550))
+        self.display_width = self.window_width  # a few callers still read this
+        self.aspectratio = 1041 / 801
 
-        # Central-widget height budget. Video takes the lion's share, then the
-        # frame slider, then the log. Sum should be <~ 0.95 so the top Field
-        # Controls dock (capped at 240 px) has room without pushing the log
-        # off-screen. Old values (0.79/0.031/0.129 = 0.95) were tuned before
-        # the dock existed, so the log was clipped on smaller displays.
-        self.displayheightratio = 0.60
-        self.framesliderheightratio = 0.031
-        self.textheightratio = 0.14
-        self.tabheightratio = 0.925
-        
-        self.aspectratio = 1041/801
-        self.resize_widgets()
+        # Retrofit the layout: put the dock contents inside a proper QVBoxLayout +
+        # QScrollArea so nothing clips, and replace the manually-positioned
+        # central widget children with a QSplitter so the log is always
+        # reachable and the video can be resized against it.
+        self._retrofit_left_dock()
+        self._retrofit_right_dock()
+        self._retrofit_central_widget()
 
     
       
@@ -228,7 +231,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # on smaller displays -- operators can still drag it larger or float
         # it if they want more room.
         self.field_controls_dock = FieldControlsDock(self, CALIBRATION_PATH)
-        self.field_controls_dock.setMaximumHeight(240)
+        # Cap the top-dock height so it doesn't crowd the central video area.
+        # QScrollArea inside each tab handles content overflow.
+        self.field_controls_dock.setMaximumHeight(320)
+        self.field_controls_dock.setMinimumHeight(180)
         self.addDockWidget(QtCore.Qt.TopDockWidgetArea, self.field_controls_dock)
 
         self.setFile()
@@ -1093,8 +1099,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tbprint("Width: {}  --  Height: {}  --  Fps: {}".format(self.video_width,self.video_height,self.videofps))
 
         self.aspectratio = (self.video_width / self.video_height)
-
-        self.resize_widgets()        
+        # (Layout is now driven by QSplitter + QScrollArea; nothing needs to
+        # be re-positioned on aspect-ratio change.)
 
         if self.videopath == 0:
             self.ui.robotsizeunitslabel.setText("um")
@@ -1372,29 +1378,103 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.exposurebox.setValue(5000)
         
 
-    def resizeEvent(self, event):
-        windowsize = event.size()
-        self.window_width = windowsize.width()
-        self.window_height = windowsize.height()
-        self.resize_widgets()
- 
-    def resize_widgets(self):
-        self.display_height = int(self.window_height*self.displayheightratio) #keep this fixed, changed the width dpending on the aspect ratio
-        self.framesliderheight = int(self.window_height*self.framesliderheightratio)
-        self.textheight = int(self.window_height*self.textheightratio)
-        self.tabheight = self.window_height*self.tabheightratio
-        self.display_height = int(self.window_height*self.displayheightratio) #keep this fixed, changed the width dpending on the aspect ratio
-        self.framesliderheight = int(self.window_height*self.framesliderheightratio)
-        self.textheight = int(self.window_height*self.textheightratio)
-        self.tabheight = self.window_height*self.tabheightratio
+    # ------------------------------------------------------------------
+    # Layout retrofit. The .ui-generated widgets sit at absolute pixel
+    # positions inside frames; we replace the top-level dock contents with
+    # a proper QVBoxLayout in a QScrollArea so nothing clips when the
+    # window is smaller than the design-time 1728x1027.
+    # ------------------------------------------------------------------
 
-        self.display_width = int(self.display_height * self.aspectratio)
+    @staticmethod
+    def _wrap_in_scroll(container_widget, existing_child_widgets):
+        """Rebuild `container_widget` around a scrollable QVBoxLayout of the
+        given child widgets. Each child keeps its own internal layout /
+        absolute positioning (they are QFrames with fixed content); we only
+        re-parent them into a vertical box so the box grows or scrolls with
+        the surrounding QDockWidget."""
+        for w in existing_child_widgets:
+            w.setParent(None)
+        # Clear whatever the .ui put on the container.
+        old_layout = container_widget.layout()
+        if old_layout is not None:
+            QtWidgets.QWidget().setLayout(old_layout)  # detach
 
-        self.ui.VideoFeedLabel.setGeometry(QtCore.QRect(10,  5,                       self.display_width,     self.display_height))
-        self.ui.frameslider.setGeometry(QtCore.QRect(10,    self.display_height+12,   self.display_width,     self.framesliderheight))
-        self.ui.plainTextEdit.setGeometry(QtCore.QRect(10,  self.display_height+20+self.framesliderheight,   self.display_width,     self.textheight))
+        inner = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(inner)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(6)
+        for w in existing_child_widgets:
+            vbox.addWidget(w)
+        vbox.addStretch(1)
 
-        #self.ui.tabWidget.setGeometry(QtCore.QRect(12,  6,  260 ,     self.tabheight))
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+        outer = QtWidgets.QVBoxLayout(container_widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+    def _retrofit_left_dock(self):
+        children = [
+            self.ui.frame_3,
+            self.ui.trackerparamsframe,
+            self.ui.robotparamsframe,
+            self.ui.CroppedVideoFeedLabel,
+            self.ui.croppedmasktoggle,
+            self.ui.croppedrecordbutton,
+            self.ui.resetdefaultbutton,
+        ]
+        self._wrap_in_scroll(self.ui.dockWidgetContents, children)
+
+    def _retrofit_right_dock(self):
+        children = [
+            self.ui.frame,           # modes + acoustic + Excel actions
+            self.ui.frame_2,         # manual field + alpha + shape maker
+            self.ui.frame_4,         # gamma / psi / freq dials (legacy)
+            self.ui.controlparamsframe,
+            self.ui.magneticfieldsimlabel,
+            self.ui.simulationbutton,
+        ]
+        self._wrap_in_scroll(self.ui.dockWidgetContents_4, children)
+
+    def _retrofit_central_widget(self):
+        """Replace the manually-positioned VideoFeedLabel / frameslider /
+        plainTextEdit with a QSplitter so the log is always visible and the
+        operator can drag the split between video and log."""
+        central = self.centralWidget()
+        # Purge whatever layout the .ui installed on the central widget.
+        old_layout = central.layout()
+        if old_layout is not None:
+            QtWidgets.QWidget().setLayout(old_layout)
+
+        # Detach children so we can re-parent them.
+        for w in (self.ui.VideoFeedLabel, self.ui.frameslider, self.ui.plainTextEdit):
+            w.setParent(None)
+
+        self.ui.VideoFeedLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.ui.VideoFeedLabel.setMinimumSize(320, 240)
+
+        bottom_widget = QtWidgets.QWidget()
+        bv = QtWidgets.QVBoxLayout(bottom_widget)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(4)
+        bv.addWidget(self.ui.frameslider)
+        self.ui.plainTextEdit.setMinimumHeight(100)
+        bv.addWidget(self.ui.plainTextEdit)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        splitter.addWidget(self.ui.VideoFeedLabel)
+        splitter.addWidget(bottom_widget)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)
+
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.addWidget(splitter)
 
     def handle_zoom(self, frame):
         
