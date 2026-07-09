@@ -1427,8 +1427,12 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(scroll)
 
     def _retrofit_left_dock(self):
-        # The cropped-view label is a fixed 310x310 QLabel that a matplotlib
-        # canvas parents onto; lock its size the same way as the sim label.
+        # The .ui-generated frames contain their own absolute-positioned
+        # children. Pin each frame's minimum size to what the .ui set so
+        # the enclosing vbox doesn't collapse them and hide the buttons.
+        self.ui.frame_3.setMinimumSize(311, 231)
+        self.ui.trackerparamsframe.setMinimumSize(311, 281)
+        self.ui.robotparamsframe.setMinimumSize(311, 61)
         self.ui.CroppedVideoFeedLabel.setFixedSize(310, 310)
         children = [
             self.ui.frame_3,
@@ -1442,9 +1446,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._wrap_in_scroll(self.ui.dockWidgetContents, children)
 
     def _retrofit_right_dock(self):
-        # The simulation label hosts a 310x310 matplotlib canvas as a child.
-        # Fix its size so the canvas doesn't distort when the vbox tries to
-        # stretch it.
+        # Pin each frame's minimum size to the .ui-designed size so vertical
+        # collapse doesn't hide their absolute-positioned children.
+        self.ui.frame.setMinimumSize(391, 212)
+        self.ui.frame_2.setMinimumSize(391, 161)
+        self.ui.frame_4.setMinimumSize(381, 131)
+        self.ui.controlparamsframe.setMinimumSize(391, 71)
         self.ui.magneticfieldsimlabel.setFixedSize(310, 310)
         children = [
             self.ui.frame,           # modes + acoustic + Excel actions
