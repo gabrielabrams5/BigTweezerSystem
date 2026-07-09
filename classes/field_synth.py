@@ -141,13 +141,23 @@ def roll_currents(base_B: Iterable[float], axis: Iterable[float],
 
 
 #: Set True when the physical rig can only attract (electromagnet + paramagnetic
-#: bead, or ferromagnetic core in any polarity). Under pull-only physics, negative
-#: currents from the pseudoinverse produce field in the "reverse" direction which
-#: still attracts the bead toward that coil -- i.e. yanks it *away* from the
-#: commanded direction. Clipping negatives to zero drops those wasted /
-#: counter-productive contributions; only the coils whose axes have a positive
-#: projection on the target direction actually fire.
+#: bead). Under pull-only physics, current sign doesn't matter -- reversing a
+#: coil's current still pulls the bead toward that coil, just wastes power.
+#: The correct synthesis is I_i = max(0, n_i . B_commanded): fire each coil
+#: proportional to how well its axis projects onto the commanded direction,
+#: and never in reverse.
 PULL_ONLY = True
+
+
+def pull_only_currents(B_target: Iterable[float]) -> np.ndarray:
+    """Fire each coil proportional to max(0, n_i . B_target). This is the
+    direct formula for attracting a paramagnetic bead toward B_target's
+    direction: only coils whose axes point *toward* that direction fire,
+    and their strength scales with how well they're aligned. No opposing
+    coil "cancels" another's pull -- the total force always adds toward
+    B_target."""
+    B = np.asarray(B_target, dtype=float).reshape(3)
+    return np.maximum(COIL_AXES.T @ B, 0.0)
 
 
 def synthesize(uniform_B: Iterable[float],
@@ -158,23 +168,51 @@ def synthesize(uniform_B: Iterable[float],
                t: float,
                gains: Iterable[float] | None = None,
                pull_only: bool | None = None) -> np.ndarray:
-    """Full pipeline: uniform + gradient + roll, times per-coil gains, clamped.
+    """Compose the commanded field and map to per-coil currents.
 
-    When pull_only (default = PULL_ONLY = True), negative currents are floored
-    to zero. On rigs whose electromagnets only attract paramagnetic beads,
-    a "negative" current on a coil would pull the bead *toward* that coil
-    (opposite of commanded direction), so we drop those contributions."""
-    I = (uniform_currents(uniform_B)
-         + gradient_currents(gradient_dir, gradient_mag)
-         + roll_currents(uniform_B, roll_axis, roll_freq_hz, t))
+    Composition:
+      1) Start from uniform_B (operator's base direction).
+      2) Add gradient_mag * gradient_dir_hat (a directional bias).
+      3) If roll_freq_hz != 0, rotate the composed vector around roll_axis
+         at roll_freq_hz Hz -- this is how rolling works under pull-only
+         physics: the commanded direction precesses, dragging the bead's
+         magnetic dipole with it.
+      4) Fire coils.
+
+    Under pull_only (default = PULL_ONLY = True), step 4 uses
+    pull_only_currents(). Otherwise the pseudoinverse (uniform_currents)
+    gives a proper signed B field for rigs where reversing polarity
+    actually pushes the bead."""
+    B_u = np.asarray(uniform_B, dtype=float).reshape(3)
+    grad_d = np.asarray(gradient_dir, dtype=float).reshape(3)
+    grad_n = np.linalg.norm(grad_d)
+    B_g = float(gradient_mag) * grad_d / grad_n if grad_n > 1e-12 else np.zeros(3)
+    B_base = B_u + B_g
+
+    if abs(float(roll_freq_hz)) > 1e-9:
+        R = _rotation_matrix(
+            np.asarray(roll_axis, dtype=float).reshape(3),
+            2 * np.pi * float(roll_freq_hz) * float(t),
+        )
+        B_cmd = R @ B_base
+    else:
+        B_cmd = B_base
+
+    if pull_only is None:
+        pull_only = PULL_ONLY
+    if pull_only:
+        I = pull_only_currents(B_cmd)
+    else:
+        I = uniform_currents(B_cmd)  # signed pseudoinverse
+
     if gains is not None:
         g = np.asarray(list(gains), dtype=float)
         if g.shape != (6,):
             raise ValueError(f"gains must have shape (6,), got {g.shape}")
         I = I * g
-    if pull_only if pull_only is not None else PULL_ONLY:
-        return np.clip(I, 0.0, 1.0)
-    return np.clip(I, -1.0, 1.0)
+
+    lo = 0.0 if pull_only else -1.0
+    return np.clip(I, lo, 1.0)
 
 
 # ------------------------------------------------------------------ calibration
