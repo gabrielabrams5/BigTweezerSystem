@@ -28,3 +28,18 @@ dist/
 # Operator-specific per-coil calibration (each rig differs). A neutral
 # calibration_example.json is committed as a template.
 calibration.json
+
+# Operator-specific full control config (measured Bmap/Gmap, solver tuning,
+# limits). config_example.yaml is committed as a template.
+config.yaml
+config.yaml.bak
+config.yaml.*.bak
+
+# Auto-downloaded neural tracker weights (NanoTrackV2 etc.). ~2 MB per
+# model, source: opencv_zoo. Fetched lazily on first use.
+models/
+
+# Auto-downloaded SAM 2 checkpoints (ultralytics pulls these into the CWD on
+# first use; sam2.1_t.pt alone is ~76 MB, past GitHub's file-size limit).
+sam2*.pt
+*.pt

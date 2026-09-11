@@ -28,6 +28,13 @@ SerialTransfer myTransfer;
 // keeps applying the most recent packet's values until a new one arrives.
 float action[7];
 
+// Soft watchdog: if no packet arrives within WATCHDOG_MS, zero all coils and
+// stop the DDS. Defends against a hung host program leaving current on. The
+// Python-side Supervisor (classes/supervisor.py) has the same idea; both
+// tripping is fine, defence in depth.
+const unsigned long WATCHDOG_MS = 500;
+unsigned long last_packet_ms = 0;
+
 // Coil 1 : top ring, azimuth 0
 const int Coil1_PWMR = 2;
 const int Coil1_PWML = 3;
@@ -82,8 +89,11 @@ void setup() {
   TCCR5B = (TCCR5B & 0b11111000) | 0x01;
   sei();
 
-  Serial.begin(115200);
+  // 500000 baud enables the ~200 Hz inner loop on the Python side.
+  // Must match classes/config_loader.py -> serial.baud (config.yaml).
+  Serial.begin(500000);
   myTransfer.begin(Serial);
+  last_packet_ms = millis();
 
   DDS.begin(W_CLK_PIN, FQ_UD_PIN, DATA_PIN, RESET_PIN);
   DDS.calibrate(124999500);
@@ -152,6 +162,17 @@ void loop() {
   if (myTransfer.available()) {
     uint16_t message = 0;
     myTransfer.rxObj(action, message);
+    last_packet_ms = millis();
+  }
+
+  // Watchdog: no packet for WATCHDOG_MS -> zero everything and skip the DDS.
+  // Do not touch `action` itself so the previous packet resumes as soon as
+  // the host recovers.
+  if (millis() - last_packet_ms > WATCHDOG_MS) {
+    set1(0.0f); set2(0.0f); set3(0.0f);
+    set4(0.0f); set5(0.0f); set6(0.0f);
+    DDS.down();
+    return;
   }
 
   // Acoustic frequency passthrough. 0 -> stop the DDS output.

@@ -24,10 +24,11 @@ from pySerialTransfer.pySerialTransfer import InvalidSerialPort
 class ArduinoHandler:
     PACKET_LABEL = "[I1, I2, I3, I4, I5, I6, acoustic_freq]"
 
-    def __init__(self, printer):
+    def __init__(self, printer, baud: int = 500000):
         self.conn = None
         self.port = None
         self.printer = printer
+        self.baud = int(baud)
         # Per-coil calibration gains applied to any send(). Default 1.0 is
         # neutral. Negative values invert an individual coil's polarity.
         self.coil_gains = [1.0] * 6
@@ -46,11 +47,14 @@ class ArduinoHandler:
             )
             return
         try:
-            self.conn = txfer.SerialTransfer(port)
+            self.conn = txfer.SerialTransfer(port, baud=self.baud)
             self.port = port
             self.conn.open()
             time.sleep(1)
-            self.printer(f"Arduino Connection initialized using port {port}")
+            self.printer(
+                f"Arduino Connection initialized using port {port} "
+                f"at {self.baud} baud"
+            )
         except InvalidSerialPort:
             self.printer(f"Could not connect to arduino at {port}: invalid port")
             self.conn = None
