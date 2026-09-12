@@ -9,32 +9,8 @@ methods into a single, stand alone, portable device. Many of the mechanical comp
 printed allowing others to build the device at a low cost. The device can be divided into three
 sections (Mechanical, Electrical, and Software) 
 
-# CAD System Overview
-
-![MagScope1](https://github.com/MaxSokolich/Magnetoacoustic-Microrobotic-Manipulation-System/assets/50302377/6825d8a5-047d-43c4-af69-0d4fb00fc2c7)
-
-![Magscope2](https://github.com/MaxSokolich/Magnetoacoustic-Microrobotic-Manipulation-System/assets/50302377/c7e8fff9-ff27-48e0-8b8f-d49c7494f22c)
-
-
-# Tracking and Control Software UI
-<img width="1724" alt="Screenshot 2023-12-20 at 2 28 14 PM" src="https://github.com/MaxSokolich/Magnetoacoustic-Microrobotic-Manipulation-System/assets/50302377/4a14a2d1-431e-4f0e-a348-e22e0dc51acd">
-
-
-# Example Control Algorithm:
-<img width="699" alt="Screenshot 2023-12-20 at 2 14 26 PM" src="https://github.com/MaxSokolich/Magnetoacoustic-Microrobotic-Manipulation-System/assets/50302377/0eedb007-9db3-4152-8e76-12740618e227">
-
-# System
-![Magscope3-2](https://github.com/MaxSokolich/Magnetoacoustic-Microrobotic-Manipulation-System/assets/50302377/697d35fd-252c-45ac-ad69-98e3f2571512)
-
 # Importing Excel Actions
 A predefined excel file with desired action commands can be imported into the system and applied. The software will begin executing each entry (or row) from the excel file once the "Apply Excel Actions" button is pressed. Each row of actions are applied at each subsequent frame from the camera. 
-<img width="259" alt="Screenshot 2024-12-06 at 11 27 47 AM" src="https://github.com/user-attachments/assets/9a6c4148-71ba-4c54-972f-bc68fefd5a64">
-<img width="775" alt="Screenshot 2024-12-06 at 11 25 11 AM" src="https://github.com/user-attachments/assets/9ce89367-d93f-425e-b5c2-988ce568c746">
-
-# Variations of System for Custom Experiments
-a) Model Predictive Control (MPC) of a magnetiized sender cell bot following an infinity path. b) Novel analytical geometry based path planning algorithm for navigating a microrobot around obstacles.
-![magscopeUIs](https://github.com/user-attachments/assets/6281b193-272a-4e1b-8e32-efe0712b9729)
-
 
 # Instructions for initial installation of system components on Nvidia Jetson AGX Orin:
 Note*** Software and system also works on Windows and MAC-OS. Jetson Orin System not neccesary.
