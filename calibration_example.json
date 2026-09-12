@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to calibration.json and adjust once measured. calibration.json itself is gitignored so operator gains stay local. Negative values invert an individual coil's H-bridge polarity (fix for a coil wound backward).",
+  "coil_gains": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+}

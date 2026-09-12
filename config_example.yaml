@@ -1,0 +1,391 @@
+# BigTweezerSystem control config — single source of truth.
+# Copy to config.yaml to use. config.yaml is gitignored so operator tuning
+# stays local. Sections and paths here mirror what classes/config_loader.py
+# and the GUI panels expect.
+
+robot:
+  # paramagnetic | soft | hard
+  # paramagnetic: attractive only (Spherotech CFM beads etc.)
+  # soft:        induced moment m = k * B (linear in B)
+  # hard:        permanent moment, fixed |m|, aligns with B
+  type: paramagnetic
+  m_mag: 1.0e-15        # A·m²  (hard only)
+  k_susc: 1.0e-12       # A·m²/T (soft only)
+
+calibration:
+  date: "not measured — geometry defaults"
+  # Bmap: 3×6, columns are per-coil unit-duty field contributions in mT.
+  # Default values below come from the aligned-ring geometry
+  # (top ring 0/120/240° azimuth @ 45° above horizontal, bottom ring mirrored).
+  # sin(45°) ≈ 0.707, cos(120°) = -0.5, sin(120°) ≈ 0.866.
+  # Row 0 = Bx per coil, row 1 = By per coil, row 2 = Bz per coil.
+  Bmap:
+    - [ 0.707, -0.354, -0.354,  0.707, -0.354, -0.354]  # Bx
+    - [ 0.0,    0.612, -0.612,  0.0,    0.612, -0.612]  # By
+    - [ 0.707,  0.707,  0.707, -0.707, -0.707, -0.707]  # Bz
+  # Gmap: 5×6. Rows are the five independent gradient components:
+  # [∂Bx/∂x, ∂Bx/∂y, ∂Bx/∂z, ∂By/∂y, ∂By/∂z]. Units mT/mm.
+  # Zeros here mean "no measured gradient" — solver will treat gradient
+  # commands as best-effort until measured.
+  Gmap:
+    - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  # Per-coil saturation duty. If not measured, keep at 1.0.
+  i_max_per_coil: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  # Logical coil → physical driver channel permutation.
+  channel_map:   [0, 1, 2, 3, 4, 5]
+  # Post-solve per-coil scalar trim (legacy behavior; negative flips polarity).
+  per_coil_gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  # 2×2 matrix mapping operator screen-frame intent → world command. Set by
+  # the Frame Calibration tab (click bead, pulse world ±X/±Y, fit displacement).
+  # Identity is neutral. Applied by JoystickBridge so stick-up = screen-up
+  # regardless of how the camera is oriented relative to the coil rig.
+  screen_to_world_2x2:
+    - [1.0, 0.0]
+    - [0.0, 1.0]
+  # RAW world→screen response, also written by the Frame Calibration tab.
+  # Unlike the matrix above (normalized to direction-only), this keeps the
+  # pixel scale: px of travel per unit world command per (Hz × second).
+  # It is the only calibrated answer to "how fast should this bead be
+  # moving right now", which the tracker's motion filter uses as its
+  # control input. Commented out = not yet calibrated; the filter then
+  # runs as plain constant velocity, which is still correct, just less
+  # sharp. Do not hand-edit — re-run Frame Cal and press Apply.
+  # screen_response_2x2:
+  #   - [1.0, 0.0]
+  #   - [0.0, 1.0]
+  # Mode B (static pull) speed scale, written by the Frame Calibration tab
+  # with the recipe selector set to "Static pull". Units are px/s per unit
+  # world command at static_response_mag. Separate from the rolling matrix
+  # above because the two scale differently: rolling speed tracks frequency
+  # and ignores magnitude, while static pull has no frequency at all and
+  # goes as magnitude SQUARED (F ∝ ∇|B|², B ∝ duty ⇒ F ∝ mag²; overdamped,
+  # so v ∝ F). Used only to give the tracker's motion filter a velocity
+  # model while driving static — direction still comes from
+  # screen_to_world_2x2, which both modes share. Absent = the filter falls
+  # back to constant velocity. Do not hand-edit; re-run Frame Cal.
+  # static_response_2x2:
+  #   - [1.0, 0.0]
+  #   - [0.0, 1.0]
+  # Drive magnitude the static response was measured at.
+  # static_response_mag: 1.0
+
+solver:
+  # Tikhonov damping for DLS solve (hard/soft rigs).
+  # Paramagnetic uses closed-form and ignores λ.
+  lambda: 0.01
+  # Per-coil cost weights inside DLS. Diagonal of W. Raise to shift load
+  # off a hot coil.
+  W: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  # Null-space objective in underdetermined solves (Mode A).
+  # minimize_gradient | minimize_power
+  null_objective: minimize_gradient
+  # After solve, if any duty exceeds the range, either clip each coil to
+  # its cap independently (`flag`, default) or divide the whole vector by
+  # the worst overshoot to preserve direction (`rescale_preserve_direction`).
+  #
+  # `flag` is the default because under paramagnetic pull the bead just
+  # moves toward the resultant highest-field region — a few degrees of
+  # direction distortion doesn't affect motion, but rescaling drops every
+  # coil's duty when one hits its cap, which the operator perceives as
+  # "weak signals." Switch back to rescale_preserve_direction if you
+  # move to a hard/soft-magnetic robot where field direction matters.
+  # rescale_preserve_direction | flag
+  saturation_policy: flag
+  # How Mode B (static pull) turns a commanded field into coil duties.
+  #   nnls       — non-negative least squares: actually realizes the
+  #                commanded direction (default).
+  #   projection — the historical max(0, n̂·B) heuristic. Kept as an escape
+  #                hatch only. With three coil azimuths it is off by a ±30°
+  #                sawtooth, exact only at multiples of 60°, and has flat
+  #                dead zones where a whole 30° span of commands produces
+  #                one realized direction — the bead refuses to turn, then
+  #                jumps. Mode A is unaffected either way: it precesses
+  #                through a full cycle and is calibrated end-to-end, so it
+  #                always uses the historical rule.
+  static_synthesis: nnls
+  # Ridge weight inside the static solve. NOT for conditioning: plain NNLS
+  # returns a minimal-support solution that breaks the top/bottom ring
+  # symmetry and tilts the |B| landscape out of plane. A small value picks
+  # the minimum-norm exact solution instead, restoring symmetric firing for
+  # 0.004° of direction accuracy. Raise it and direction error grows
+  # (~0.4° at 1e-2).
+  static_ridge: 0.0001
+
+modes:
+  mode_a:                    # Rolling pull (base direction precesses around roll_axis)
+    # SHARED magnitude knob in [0, 1] — read by the joystick (master gain),
+    # path follower, Frame Cal pulses, and the Mode A tab. Edited on the
+    # Joystick tab (or the pad's X/Y buttons, ±0.1).
+    magnitude_default: 1.0
+    # SHARED roll frequency (Hz) — base joystick freq (right stick centered),
+    # path-follower roll speed, and Frame Cal pulse frequency. Edited on the
+    # Joystick tab.
+    freq_default: 3.0
+    # Right-stick full right maps to +freq_max_hz; full left = same curve,
+    # reversed (negative frequency = roll away from the stick).
+    freq_max_hz: 20.0
+    # Hz/s ramp toward the frequency target. Keep high (~10) when driving
+    # frequency from the joystick — at 0.5 a sign flip takes many seconds.
+    freq_ramp_rate: 10.0
+    # Axis the base B vector rotates around — seeds the Mode A GUI panel
+    # only. While a stick is held the joystick bridge overrides this every
+    # poll with the horizontal axis perpendicular to the travel direction,
+    # so the bead rolls toward the stick instead of precessing in place.
+    roll_axis_default: [0.0, 0.0, 1.0]
+  mode_b:                    # Static pull
+    magnitude_default: 1.0
+    direction_default: [0.0, 0.0, 1.0]
+
+limits:
+  # Sum of |I| across all six coils, hard cap.
+  i_total_max: 6.0
+  # Total power budget (I²R sum). No thermistors → estimated.
+  power_budget_w: 60.0
+  # Rolling duty-cycle cap per coil.
+  duty_cycle_max: 0.9
+  # If no command_ready in this many ms, Supervisor zeros the coils.
+  watchdog_ms: 500
+  # Coil resistance assumption for I²R power estimate (Ω).
+  coil_resistance_ohm: 4.0
+  # Global scaling on every packet sent to the HAL. 1.0 = full power; drop to
+  # 0.5 while troubleshooting so the bead doesn't get flung across the sample.
+  # Applied at the HAL layer, so it covers wizard + Mode A/B + joystick +
+  # path-follow + frame-cal pulses uniformly.
+  output_scale: 1.0
+
+pid:                         # Outer loop, camera rate.
+  Kp: 0.1
+  Ki: 0.01
+  Kd: 0.001
+
+serial:
+  # Match arduino_files/main_3DTweezers/main_3DTweezers.ino Serial.begin(...)
+  baud: 500000
+  # Glob for auto-discovery on Mac/Linux. On Windows use e.g. "COM3".
+  port_glob: "/dev/cu.usbmodem*"
+
+loop:
+  # Inner-loop target Hz. Real rate depends on serial + Arduino throughput.
+  inner_hz_target: 200
+
+acoustic:
+  # Default drive frequency in Hz for the AD9850 DDS.
+  freq_hz: 0.0
+
+tracker:
+  # Microns per screen pixel. 0.335 = 3.35 µm/px at 1× / 10× objective.
+  um_per_pixel: 0.335
+  # Frames used to compute velocity + acceleration (rolling window).
+  memory_frames: 15
+  # Seconds without a detection before a target is declared LOST (robot:
+  # path following stops). Time, not frames: the tracker worker drops
+  # frames under load, so a frame count is an unpredictable amount of real
+  # time — and a late safety stop means the robot runs open-loop.
+  lost_timeout_s: 1.5
+  # Normalized cross-correlation gate. Below this score the tracker falls
+  # back to mask relocalization inside the same search window. Note this
+  # catches only LOW-confidence loss (out of focus, left frame); an
+  # identical neighbour produces TWO high-confidence peaks and is caught
+  # by the ambiguity knobs below instead.
+  min_match_confidence: 0.5
+  # Re-cut the template from the current position every N seconds to guard
+  # against slow appearance drift. Suspended while contested.
+  template_refresh_s: 1.5
+  # Copy each frame before handing it to the tracker thread. The aravis
+  # backend re-latches the same buffer object every grab, so without this
+  # the capture thread can overwrite pixels mid-correlation. Costs one
+  # memcpy per frame; set false only if profiling says it hurts.
+  copy_frames: true
+
+  # --- motion prior -------------------------------------------------
+  # The correlation surface is weighted by a Gaussian centred on a Kalman
+  # prediction before the peak is picked, so the peak consistent with
+  # where the bead was heading wins instead of whichever is marginally
+  # higher. Without this, two identical beads in the window are separated
+  # by sensor noise alone.
+  #
+  # Master switch. false = pre-prior behaviour exactly: search window on
+  # the last measured position, plain argmax, every detection fused. Set
+  # this false first if the tracker box misbehaves on the rig — it
+  # isolates the whole motion-prior stack in one flag.
+  motion_prior: true
+  # Search half-width in px. 0 = derive from crop_length (×1.5), which is
+  # the historical behaviour. NOTE the ambiguity detector can only see a
+  # neighbour within (search_half − template_half) px of the prediction —
+  # ~32 px at the defaults. Widening this buys earlier contest warning at
+  # the cost of a bigger matchTemplate.
+  search_half_px: 0
+  # Runner-up/winner peak ratio that latches the contested state, and the
+  # lower ratio that releases it (hysteresis stops per-frame chatter).
+  ambiguity_enter: 0.85
+  ambiguity_exit: 0.65
+  # Hard ceiling on how long the contested latch may hold. Contested means
+  # "coast on the filter and stop believing the image", which is only safe
+  # as a brief bridge — held indefinitely the box stops following the bead
+  # and drifts on stale velocity.
+  contested_max_s: 1.5
+  # Floor on the prior's sigma in px, so a confident filter can never
+  # over-commit and lock out a real manoeuvre.
+  prior_sigma_floor_px: 3.0
+  # Filter tuning. accel_noise is how hard the bead may deviate from the
+  # model (px/s²); meas_noise is detection scatter (px); velocity_tau is
+  # the first-order lag with which velocity follows the commanded drive —
+  # microrobots are overdamped, so this is short.
+  kf_accel_noise_px_s2: 400.0
+  kf_meas_noise_px: 2.0
+  kf_velocity_tau_s: 0.15
+  # Process-noise multiplier while coasting (contested or no detection),
+  # so the prior widens rather than staying falsely confident.
+  kf_coast_inflate: 4.0
+
+  # --- distractor tracking ------------------------------------------
+  # You cannot exclude a neighbour you aren't modelling. This runs the
+  # same mask globally at a low rate and keeps a light track per blob, so
+  # their predicted positions can be suppressed on the correlation
+  # surface before the peak is picked.
+  distractors:
+    enabled: true
+    # Global pass rate. Beads are slow; 5–10 Hz is plenty.
+    rate_hz: 8.0
+    # Association gate in px — a blob further than this from a track's
+    # prediction starts a new track instead of updating it.
+    gate_px: 40.0
+    # Safety cap on blobs per pass (largest first).
+    max_blobs: 64
+
+  # Tracker backend per object. Both default to the fast template path
+  # (cv2.matchTemplate); flip either to `adaptive` for the neural learned
+  # tracker (NanoTrackV2 by default, with MIL fallback).
+  #   template = current fast path (cv2.matchTemplate).
+  #   adaptive = neural tracker (NanoTrackV2 by default).
+  robot_tracker_backend: template
+  cell_tracker_backend: template
+  # Which adaptive backend to try first when cell_tracker_backend=adaptive.
+  # auto = try nano then mil.  nano | vit | mil pin one explicitly.
+  adaptive_backend: auto
+  # cv2.dnn target preference. auto probes CUDA_FP16 → CUDA → OPENCL_FP16
+  # → OPENCL → CPU and adopts the first one whose forward() runs cleanly.
+  # Force one for debugging (e.g. cpu if a driver is flaky).
+  adaptive_dnn_target: auto
+  # Where neural tracker weights live locally (auto-downloaded on first
+  # use). VitTrack int8-quantized (~270 KB) is what auto mode fetches;
+  # NanoTrack requires manual placement (opencv_zoo dropped it).
+  models_dir: "models"
+  # URL prefix used to fetch the neural-tracker ONNX. Points at opencv_zoo
+  # via the media.githubusercontent.com host that resolves Git LFS.
+  # raw.githubusercontent.com returns LFS *pointers* instead of the actual
+  # bytes, which is why this URL differs from the browsable one.
+  nano_weights_url_prefix: "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/object_tracking_vittrack/"
+  # SAM 2 (Segment Anything Model 2) model size — the "more powerful"
+  # backend. Requires `pip install ultralytics` (pulls torch, ~500 MB).
+  # Sizes: tiny (~40MB weights, fast) | small | base | large (~230MB,
+  # slower but most accurate). Auto-downloads via ultralytics on first use.
+  sam2_size: tiny
+
+  # Robot mask parameters (the paramagnetic bead).
+  robot:
+    mask_lower: 0
+    mask_upper: 128
+    blur: 0
+    dilation: 0
+    crop_length: 40       # half-side of the ROI used for template + search
+    invert: false
+    min_blob_area_px: 20
+
+  # Cell mask parameters (non-magnetic beads to be pushed).
+  cell:
+    mask_lower: 0
+    mask_upper: 128
+    blur: 0
+    dilation: 0
+    crop_length: 40
+    invert: false
+    min_blob_area_px: 20
+
+camera:
+  # Display-only view rotation in degrees CW (0 / 90 / 180 / 270). Cycled by
+  # the ⟳ button on the video view. The tracker, path following, and frame
+  # calibration always run in raw camera coordinates; the joystick composes
+  # this rotation so stick-up = displayed-up.
+  view_rotation_deg: 0
+
+recording:
+  # Annotated-view recording (⏺ button on the video). Captures what the
+  # operator sees — overlays and the ⟳ view rotation baked in — at the
+  # on-screen display resolution, NOT raw camera frames.
+  # This is the grab rate AND the mp4's playback fps: a fixed-rate grab
+  # timer makes the file play back at wall-clock speed by construction.
+  fps: 20
+  # Output folder. Empty = platform default: D:/Microrobots/Tracking Data
+  # on Windows, <repo>/Data elsewhere. Created on first recording.
+  output_dir: ""
+
+path_follow:
+  # Waypoint arrival threshold — target advances when target within this px.
+  arrived_px: 15
+  # Robot considered "arrived at push_position" — hysteresis vs arrived_px.
+  approach_arrived_px: 8
+  # Fallback push offset (px) when robot / cell diameters aren't yet known.
+  push_offset_px: 25
+  # How the follower moves the bead: "rolling" (Mode A — the field sweeps
+  # the vertical plane containing the travel direction; the bead rolls) or
+  # "static" (legacy Mode B pull). Rolling is what actually locomotes
+  # paramagnetic beads. Speed/strength come from the shared knobs under
+  # modes.mode_a.* (edited on the Joystick tab).
+  drive_mode: rolling
+  # Frames without progress on |cell.pos - goal| before marking cell LOST.
+  stall_frames: 300
+  # While the robot's identity is contested the follower HOLDS station
+  # (field OFF, run still armed) rather than driving a possibly-swapped
+  # target, and resumes by itself when the contest clears. If it never
+  # clears within this many seconds, the run stops.
+  contested_timeout_s: 3.0
+  # Append contested-state enter/exit events (ambiguity, both candidate
+  # positions, timestamps) to tracking_events_<stamp>.jsonl in the
+  # recording output dir, so a run can be audited for near-swaps after
+  # the fact.
+  event_log: true
+  # Image → world mapping now comes from calibration.screen_to_world_2x2
+  # (Frame Cal tab) — the same matrix the joystick uses.
+
+joystick:
+  # Set false to disable the joystick entirely (bridge doesn't even open pygame).
+  enabled: true
+  # Stick deadzone. Anything |axis| < this is treated as zero.
+  deadzone: 0.15
+  # Polling rate. 33 Hz keeps stick movement smooth; matches legacy cadence.
+  poll_hz: 33
+  # Which mode grabbing the left stick engages: "rolling" (Mode A — bead
+  # rolls toward the stick) or "static" (Mode B — fixed pull). Switchable
+  # live from the Joystick tab.
+  stick_mode: rolling
+  # Flip the left stick's screen-frame intent. Applied BEFORE the view
+  # rotation and calibration matrix, so "Invert X" always flips
+  # screen-left/right exactly as the operator sees it. Toggle live on the
+  # Joystick tab.
+  invert_x: false
+  invert_y: false
+  # Axis indices. Defaults are for macOS / Windows. On Linux swap in:
+  #   axis_right_x: 3, axis_right_y: 4, axis_lt: 2, axis_rt: 5
+  # The bridge picks Linux defaults automatically via platform.system().
+  axis_left_x: 0
+  axis_left_y: 1
+  axis_right_x: 2
+  axis_right_y: 3
+  axis_lt: 4
+  axis_rt: 5
+  # Button remap. Defaults target Xbox layout (A=0, B=1, X=2, Y=3, Back=6, Start=7).
+  # PlayStation pads on SDL usually match; check the Joystick panel's live LEDs to
+  # verify. Set to -1 to disable a button binding. Rolling (Mode A) is the
+  # default when the sticks come alive; mode_b swaps to static pull.
+  buttons:
+    mode_b: 0        # toggle Mode B (static) ↔ OFF
+    mode_a: 1        # toggle Mode A (rolling) ↔ OFF
+    mag_down: 2      # magnitude −0.1
+    mag_up: 3        # magnitude +0.1
+    estop: 6         # supervisor.estop()  (hard stop, needs explicit reset)
+    reset_estop: 7   # supervisor.reset_estop()

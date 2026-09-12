@@ -1,48 +1,60 @@
+"""ArduinoHandler for the 3D-tweezer 7-float protocol.
+
+Packet: [I1, I2, I3, I4, I5, I6, acoustic_freq]
+
+All six currents are signed PWM duty in [-1, 1]. The Arduino calls set*()
+directly on each; sign chooses H-bridge polarity. Python side handles all
+field synthesis via classes/field_synth.py.
+
+Also exposes a `send_field(...)` compatibility method that takes the
+legacy Bx/By/Bz + gradient + roll intent and synthesizes currents on the
+fly. This is transitional -- used during the gui_functions refactor so
+the old call sites keep working, then deleted in migration Step 4.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Sequence
+
 from pySerialTransfer import pySerialTransfer as txfer
 from pySerialTransfer.pySerialTransfer import InvalidSerialPort
-import time
+
 
 class ArduinoHandler:
-    """
-    Handles connections and messaging to an Arduino.
+    PACKET_LABEL = "[I1, I2, I3, I4, I5, I6, acoustic_freq]"
 
-    Attributes:
-        conn:   PySerialTransfer connection; has None value when no successsful
-                connection has been made
-        port:   name of connection port currently being used; has None value when
-                no successful port has been used
-    """
-
-    def __init__(self, printer):
+    def __init__(self, printer, baud: int = 500000):
         self.conn = None
         self.port = None
         self.printer = printer
-        # Per-coil gain multipliers (applied on Arduino in normal-mode send()).
-        # 1.0 means no scaling. Populated by the Calibration tab / load_gains().
+        self.baud = int(baud)
+        # Per-coil calibration gains applied to any send(). Default 1.0 is
+        # neutral. Negative values invert an individual coil's polarity.
         self.coil_gains = [1.0] * 6
+        # Channel permutation: channel_map[i] = which physical driver logical
+        # coil i is wired to. Default identity. Set from calibration.json.
+        self.channel_map = [0, 1, 2, 3, 4, 5]
 
-        
-
-    def connect(self, port: str) -> None:
-        """
-        Initializes a connection to an arduino at a specified port. If successful,
-        the conn and port attributes are updated. If the port is unavailable or
-        already claimed (e.g. Arduino IDE Serial Monitor still open, or a stale
-        Python process holding the handle on Windows), we log and leave
-        self.conn = None so the GUI can still run in offline mode.
-        """
+    def connect(self, port) -> None:
+        """Open a SerialTransfer connection. Idempotent and non-fatal on failure."""
         if port is None:
             self.printer("No port specified for Arduino, skipping connection")
             return
         if self.conn is not None:
-            self.printer(f"Connection already initialized at port {self.port}, new port {port} ignored")
+            self.printer(
+                f"Connection already initialized at port {self.port}, new port {port} ignored"
+            )
             return
         try:
-            self.conn = txfer.SerialTransfer(port)
+            self.conn = txfer.SerialTransfer(port, baud=self.baud)
             self.port = port
             self.conn.open()
             time.sleep(1)
-            self.printer(f"Arduino Connection initialized using port {port}")
+            self.printer(
+                f"Arduino Connection initialized using port {port} "
+                f"at {self.baud} baud"
+            )
         except InvalidSerialPort:
             self.printer(f"Could not connect to arduino at {port}: invalid port")
             self.conn = None
@@ -58,96 +70,94 @@ class ArduinoHandler:
             self.printer(f"Could not connect to arduino at {port}: {type(e).__name__}: {e}")
             self.conn = None
             self.port = None
-   
-    # Packet layout: order MUST match main_3DTweezers.ino action[0..16] unpacking.
-    #   [0..9]   normal field packet
-    #   [10]     calibration_mode (0 = normal, 1 = direct per-coil PWM)
-    #   [11..16] coil_values[6] (gain multipliers in normal mode; direct PWM 0..1 in calibration mode)
-    PACKET_LABEL = "[Bx, By, Bz, alpha, gamma, freq, psi, gradient, equal_field, acoustic_freq, cal_mode, c1..c6]"
 
-    def _tx(self, data, tag):
+    def send(self, currents: Sequence[float], acoustic_freq: float = 0.0) -> None:
+        """Send the 7-float packet: 6 signed coil currents + acoustic freq.
+
+        Applies self.coil_gains element-wise, then clamps. Range depends on
+        field_synth.PULL_ONLY: under pull-only rigs we clip to [0, 1] so
+        negative-gain-flipped currents don't try to reverse polarity (which
+        would still attract the paramagnetic bead toward that coil).
+        """
+        currents = list(currents)
+        if len(currents) != 6:
+            self.printer(f"send: expected 6 currents, got {len(currents)}")
+            return
+        # Late import to avoid a circular hard-dep at import time.
+        from classes.field_synth import PULL_ONLY
+        lo = 0.0 if PULL_ONLY else -1.0
+        # 1) Apply per-coil gains + clamp
+        currents = [max(lo, min(1.0, float(c) * float(g)))
+                    for c, g in zip(currents, self.coil_gains)]
+        # 2) Route through the channel map so a wiring swap between the
+        #    Arduino driver channels and physical coil positions is
+        #    corrected in software. currents[i] is the *logical* current for
+        #    coil i; sent[channel_map[i]] is the physical wire it goes to.
+        sent = [0.0] * 6
+        for i in range(6):
+            sent[self.channel_map[i]] = currents[i]
+        data = [round(c, 3) for c in sent] + [float(acoustic_freq)]
         if self.conn is None:
-            self.printer(f"No Connection:  {self.PACKET_LABEL} = {data}")
+            self.printer("No Connection:  " + self.PACKET_LABEL + " = " + str(data))
         else:
             message = self.conn.tx_obj(data)
             self.conn.send(message)
-            self.printer(f"{tag}:  {self.PACKET_LABEL} = {data}")
+            # macOS's serial driver buffers small writes and doesn't push them
+            # to the wire until the buffer fills. At the tracker's ~15 Hz send
+            # rate that never happens naturally, so the Arduino sees nothing
+            # even though every send() succeeds from Python's side. Force it.
+            try:
+                self.conn.connection.flush()
+            except Exception:
+                pass
+            self.printer("Data Sent:  " + self.PACKET_LABEL + " = " + str(data))
 
-    def send(self, Bx, By, Bz, alpha, gamma, freq, psi, gradient_status, equal_field_status, acoustic_freq) -> None:
-        """Normal-mode 17-float packet. Uses self.coil_gains as the per-coil multipliers."""
-        data = [
-            round(float(Bx), 3), round(float(By), 3), round(float(Bz), 3),
-            round(float(alpha), 3), round(float(gamma), 3), round(float(freq), 3),
-            round(float(psi), 3),
-            float(gradient_status), float(equal_field_status), float(acoustic_freq),
-            0.0,  # calibration_mode
-        ] + [float(g) for g in self.coil_gains]
-        self._tx(data, "Data Sent")
+    def send_field(self, Bx, By, Bz,
+                   gradient_dir=(0.0, 0.0, 1.0), gradient_mag=0.0,
+                   roll_axis=(0.0, 0.0, 1.0), roll_freq=0.0,
+                   t=0.0, acoustic_freq=0.0,
+                   gains=None) -> None:
+        """High-level field intent -> per-coil currents via field_synth.
 
-    def send_calibration_pulse(self, coil_index: int, strength: float, acoustic_freq: float = 0.0) -> None:
-        """Fire exactly one coil at `strength` (0.0..1.0) with all others off.
-        Used by the Calibration tab to isolate one coil for magnetometer readings.
-        `coil_index` is 0..5 for C1..C6.
+        This is the recommended entry point for gui_functions. It hides the
+        matrix math behind a keyword-argument interface that mirrors the
+        operator's mental model (uniform field, gradient, roll, acoustic).
         """
-        if not 0 <= coil_index < 6:
-            self.printer(f"send_calibration_pulse: coil_index {coil_index} out of range (0..5)")
-            return
-        strength = max(-1.0, min(1.0, float(strength)))
-        coil_values = [0.0] * 6
-        coil_values[coil_index] = strength
-        data = [0.0] * 7 + [0.0, 0.0, float(acoustic_freq), 1.0] + coil_values
-        self._tx(data, f"Cal Pulse C{coil_index + 1}={strength}")
+        # Import here so this module doesn't require numpy at import time on
+        # test / offline runs where field_synth is exercised separately.
+        from classes import field_synth
+        I = field_synth.synthesize(
+            uniform_B=(Bx, By, Bz),
+            gradient_dir=gradient_dir,
+            gradient_mag=gradient_mag,
+            roll_axis=roll_axis,
+            roll_freq_hz=roll_freq,
+            t=t,
+            gains=gains,
+        )
+        self.send(I, acoustic_freq)
 
-    def send_calibration_all_off(self) -> None:
-        """Zero all coils while still in calibration mode. Used to stop a pulse."""
-        data = [0.0] * 7 + [0.0, 0.0, 0.0, 1.0] + [0.0] * 6
-        self._tx(data, "Cal Off")
-
-    def set_gains(self, gains) -> None:
-        """Update per-coil normal-mode gain multipliers. Expects an iterable of 6 floats."""
-        gains = list(gains)
-        if len(gains) != 6:
-            self.printer(f"set_gains: expected 6 values, got {len(gains)}")
-            return
-        self.coil_gains = [float(g) for g in gains]
-        self.printer(f"Coil gains set to {self.coil_gains}")
-    
-    
     def close(self) -> None:
-        """
-        Closes the current connection, if applicable
-
-        Args:
-            None
-        Returns:
-            None
-        """
         if self.conn is not None:
-         
             self.printer(f"Closing connection at port {self.port}")
-            self.send(0,0,0,0,0,0,0,0,0,0)
+            self.send([0.0] * 6, 0.0)
             self.conn.close()
-   
-            
 
 
 if __name__ == "__main__":
-
-    def tbprint(text):
-        #print to textbox
-        print(text)
-
-
-    PORT = "/dev/cu.usbmodem11301"
-    arduino = ArduinoHandler(tbprint)
+    # Smoke test: fire each coil in turn, then zero.
+    import sys
+    PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/cu.usbmodem11301"
+    arduino = ArduinoHandler(print)
     arduino.connect(PORT)
     time.sleep(1)
 
-    arduino.send(0,0,0,0,0,0,0,0,0,0)
-    print("sending")
-    time.sleep(5)
-    arduino.send(0,0,0,0,0,0,0,0,0,0)
-    print("zeroing")
+    for i in range(6):
+        currents = [0.0] * 6
+        currents[i] = 0.3
+        print(f"Firing coil C{i + 1} at 30% duty for 1 s")
+        arduino.send(currents, 0.0)
+        time.sleep(1.0)
+
+    arduino.send([0.0] * 6, 0.0)
     arduino.close()
-    
-    

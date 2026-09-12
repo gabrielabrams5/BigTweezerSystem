@@ -1,197 +1,136 @@
-import sys
-import time as time
+"""3D field simulator widget.
+
+Renders three things in real time inside the GUI's magnetic-field label:
+  1. The six coil axis unit vectors in gray, tips labelled C1..C6.
+  2. The commanded uniform B vector as a red arrow at the origin.
+  3. The per-coil currents as a small bar chart below the 3D axes.
+
+The class is still called `HelmholtzSimulator` for backward compatibility
+with gui_functions.py's `self.simulator = HelmholtzSimulator(...)`
+constructor -- Step 6 renames the reference. Legacy attributes like
+`alpha`, `gamma`, `psi`, `freq`, `roll`, `omega` are accepted as writable
+attributes so the old widget code paths don't crash on setattr; they're
+just ignored by the draw logic.
+"""
+
+from __future__ import annotations
+
 import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.animation import FuncAnimation
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QTimer
+
+from classes import field_synth
+
+
+_COIL_LABELS = ["C1", "C2", "C3", "C4", "C5", "C6"]
+
 
 class HelmholtzSimulator(FigureCanvas):
     def __init__(self, parent=None, width=310, height=310, dpi=200):
-        fig = plt.figure(figsize=(width/dpi, height/dpi), dpi=dpi)
-        fig.tight_layout()
-        fig.subplots_adjust(top=1, bottom=0, left=-0.1, right=1)
-        self.ax = fig.add_subplot(111, projection='3d')
+        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+        fig.subplots_adjust(top=1.0, bottom=0.28, left=0.0, right=1.0)
+        self.ax = fig.add_subplot(2, 1, 1, projection="3d")
+        self.bar_ax = fig.add_subplot(2, 1, 2)
+        # Give the bar chart room and shrink the 3D plot
+        fig.subplots_adjust(hspace=0.15)
 
         super().__init__(fig)
         self.setParent(parent)
-        
-        #rolling parameters
-        self.Bx = 0
-        self.By = 0
-        self.Bz = 0
-        self.A = 1 #amplitude of rotating magetnic field
-        self.alpha = 0
-        self.gamma = np.pi/2
-        self.psi = 0
-        self.freq = 0
-        self.omega = 2*np.pi* float(self.freq)  #angular velocity of rotating field defined from input from Rotating Frequency Entry
+
+        # Field-synth state -- the only inputs that actually matter.
+        self.uniform_B = np.zeros(3)
+        self.currents = np.zeros(6)
+
+        # Legacy compat attributes. Old code writes to these; we ignore them
+        # in the draw and just keep uniform_B/currents authoritative.
+        self.Bx = 0.0
+        self.By = 0.0
+        self.Bz = 0.0
+        self.alpha = 0.0
+        self.gamma = 0.0
+        self.psi = 0.0
+        self.freq = 0.0
+        self.omega = 0.0
         self.roll = False
-    
-        #params for field
-        self.milli = 10**(-6)
-        self.mu = 4*np.pi * (10**(-7)) /self.milli
-        self.start_time = time.time()
 
-        #define 3D grid
-        grid_res = 16
-        min_x,min_y,min_z = -25, -25,-25
-        max_x, max_y, max_z = 25, 25,25
-
-        X = np.arange(min_x, max_x, grid_res)
-        Y = np.arange(min_y, max_y, grid_res)
-        Z = np.arange(min_z, max_z, grid_res)
-        self.x,self.y,self.z = np.meshgrid(X, Y, Z)
-        self.ax.scatter(self.x,self.y,self.z, s = 2, c= "b")
-        self.ax.set_xlabel('x',labelpad=-15) 
-        self.ax.set_ylabel('y',labelpad=-15) 
-        self.ax.set_zlabel('z',labelpad=-17)
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.ax.set_zticks([])
-        
-
-        
+        self._init_axes()
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.animate)
-          
+        self.timer.timeout.connect(self._tick)
 
+    # ------------------------------------------------------ public API
 
-
-    #helmholtz X field equation
-    def xb_field(self,x, Ix):
-        a = 60 #radius
-        c = (155/2) #distance between /2
-        N = 1200 #number of turns
-        #the field at x away from the coil
-        term1 = 1/ (a**2 + (c-x)**2)**(3/2)
-        term2 = 1/ (a**2 + (c+x)**2)**(3/2)
-        B = ((self.mu * N * Ix * a**2)/2 ) * (term1 + term2)
-        return B
-
-    #helmholtz Y field equation
-    def yb_field(self,y, Iy):
-        a = 60 #radius
-        c = (155/2) #distance between /2
-        N = 1200 #number of turns
-        #the field at x away from the coil
-        term1 = 1/ ((a**2 + (c-y)**2)**(3/2))
-        term2 = 1/ ((a**2 + (c+y)**2)**(3/2))
-        B = ((self.mu * N * Iy * a**2)/2 ) * (term1 + term2)
-        return B
-
-    #helmholtz Z field equation
-    def zb_field(self, z, Iz):
-        a = 60 #radius
-        c = (155/2) #distance between /2
-        N = 1200 #number of turns
-        #the field at x away from the coil
-        term1 = 1/ (a**2 + (c-z)**2)**(3/2)
-        term2 = 1/ (a**2 + (c+z)**2)**(3/2)
-        B = ((self.mu * N * Iz * a**2)/2 ) * (term1 + term2)
-        return B
-    
-
-    def animate(self):
-        tp = time.time() - self.start_time
-       
-      
-        if [self.Bx, self.By, self.Bz, self.freq] == [0,0,0,0]:
-            self.zero()
- 
-        else:
-            
-            
-            if self.freq == 0:
-                Brollx = 0
-                Brolly = 0
-                Brollz = 0
-            else:
-                Brollx =  ((-np.sin(self.alpha) * np.sin(self.omega*tp)) + (-np.cos(self.alpha) * np.cos(self.gamma)  * np.cos(self.omega*tp))) 
-                Brolly =  ((np.cos(self.alpha) * np.sin(self.omega*tp)) + (-np.sin(self.alpha) * np.cos(self.gamma) *  np.cos(self.omega*tp))) 
-                Brollz =  np.sin(self.gamma) * np.cos(self.omega*tp)
-        
-
-            if self.psi < np.pi/2 and self.psi !=0:
-                c = 1/np.tan(self.psi)
-                BxPer = c* np.cos(self.alpha) * np.sin(self.gamma)
-                ByPer = np.tan(self.alpha) * BxPer
-                BzPer = BxPer * (1/np.cos(self.alpha)) * (1/np.tan(self.gamma))
-            else:
-                BxPer = 0
-                ByPer = 0
-                BzPer = 0
-                c = 0
-        
-            Brollx = (Brollx + BxPer) / (1+c)
-            Brolly = (Brolly + ByPer) / (1+c)
-            Brollz = (Brollz + BzPer) / (1+c)
-
-            #super impose orient field on top of already agumented roll field that includes a perp compnent from 
-            #allows for alittle more control of vector field
-            Ix = self.Bx + Brollx
-            Iy = self.By + Brolly
-            Iz = self.Bz + Brollz
-      
-            
-            Ix = Ix / np.sqrt(Ix**2 + Iy**2 + Iz**2)
-            Iy = Iy / np.sqrt(Ix**2 + Iy**2 + Iz**2)
-            Iz = Iz / np.sqrt(Ix**2 + Iy**2 + Iz**2)
-            
-            BX = self.zb_field(self.x, Ix)  
-            BY = self.zb_field(self.y, Iy)
-            BZ = self.zb_field(self.z, Iz)
-
-            
-            # Draw Bx,By,Bz field
-            self.ax.clear()
-            if self.freq !=0:
-                self.show_axis_rotation(self.ax, 40)
-            self.ax.set_xlabel('x') 
-            self.ax.set_ylabel('y') 
-            self.ax.set_zlabel('z')
-            self.ax.set_xticks([])
-            self.ax.set_yticks([])
-            self.ax.set_zticks([])
-            speed = np.sqrt((BX)**2+(BY)**2+(BZ)**2).flatten()
-            self.ax.quiver(self.x,self.y,self.z,BX,BY,BZ, color='black',length=1.5) #norm = colors.LogNorm(vmin=speed.min(), vmax=speed.max() ))#,density = 2)#norm = colors.LogNorm(vmin=speed.min(), vmax=speed.max() ))
-            self.ax.scatter(self.x,self.y,self.z, s = 2, c= "b")
-            self.draw()
-
-
-    def show_axis_rotation(self, ax, length):
-        #plot rotation axis
-        if self.roll == True:
-            alpha = self.alpha + np.pi/2
-        else:
-            alpha = self.alpha
-        x = 1 * np.sin(self.gamma) * np.cos(alpha)
-        y = 1 * np.sin(self.gamma) * np.sin(alpha)  
-        z = 1 * np.cos(self.gamma)
-        ax.quiver(0,0,0,x,y,z,color='red',length=length)
-
-
+    def set_state(self, uniform_B, currents):
+        """Called by apply_actions once per Arduino send."""
+        self.uniform_B = np.asarray(uniform_B, dtype=float).reshape(3)
+        self.currents = np.asarray(currents, dtype=float).reshape(6)
 
     def start(self):
-       self.timer.start(75)# Update plot every 10 ms
-
-    def zero(self):
-        self.ax.clear()
-        self.ax.scatter(self.x,self.y,self.z, s = 2, c= "b")
-        self.ax.set_xlabel('x') 
-        self.ax.set_ylabel('y') 
-        self.ax.set_zlabel('z')
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.ax.set_zticks([])
-        self.draw()
-
+        self.timer.start(75)  # ~13 Hz redraw
 
     def stop(self):
         self.timer.stop()
         self.zero()
 
+    def zero(self):
+        self.uniform_B = np.zeros(3)
+        self.currents = np.zeros(6)
+        self._draw()
 
+    # ------------------------------------------------------ internals
 
+    def _init_axes(self):
+        self.ax.set_xlim(-1.1, 1.1)
+        self.ax.set_ylim(-1.1, 1.1)
+        self.ax.set_zlim(-1.1, 1.1)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_zticks([])
+        self.ax.set_xlabel("x", labelpad=-15)
+        self.ax.set_ylabel("y", labelpad=-15)
+        self.ax.set_zlabel("z", labelpad=-17)
+
+    def _tick(self):
+        # Fold legacy Bx/By/Bz writes into uniform_B on every tick. Once
+        # Step 6 wires callers to set_state() directly this fallback is
+        # dead code and gets removed.
+        legacy = np.array([self.Bx, self.By, self.Bz])
+        if np.any(legacy != 0.0):
+            self.uniform_B = legacy
+        self._draw()
+
+    def _draw(self):
+        # 3D field vector
+        self.ax.clear()
+        self._init_axes()
+
+        # Draw the six coil axes as thin gray sticks
+        for i in range(6):
+            n = field_synth.COIL_AXES[:, i]
+            self.ax.plot([0, n[0]], [0, n[1]], [0, n[2]],
+                         color=(0.6, 0.6, 0.6), linewidth=0.7)
+            self.ax.text(n[0] * 1.05, n[1] * 1.05, n[2] * 1.05,
+                         _COIL_LABELS[i], fontsize=4, color=(0.4, 0.4, 0.4))
+
+        # Draw commanded uniform B vector in red
+        b = self.uniform_B
+        if np.linalg.norm(b) > 1e-9:
+            self.ax.quiver(0, 0, 0, b[0], b[1], b[2],
+                           color="red", linewidth=1.2,
+                           arrow_length_ratio=0.15)
+
+        # Per-coil current bar chart
+        self.bar_ax.clear()
+        idx = np.arange(6)
+        # Top ring in blue, bottom ring in orange
+        colors = ["#3d7dd6", "#3d7dd6", "#3d7dd6",
+                  "#e28c3d", "#e28c3d", "#e28c3d"]
+        self.bar_ax.bar(idx, self.currents, color=colors, width=0.7)
+        self.bar_ax.set_xticks(idx)
+        self.bar_ax.set_xticklabels(_COIL_LABELS, fontsize=5)
+        self.bar_ax.set_ylim(-1.1, 1.1)
+        self.bar_ax.axhline(0, color="black", linewidth=0.4)
+        self.bar_ax.tick_params(axis="y", labelsize=5)
+        self.bar_ax.set_ylabel("PWM", fontsize=5, labelpad=1)
+
+        self.draw()

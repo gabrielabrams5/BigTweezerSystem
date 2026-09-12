@@ -39,16 +39,17 @@ from classes.cell_class import Cell
 from classes.arduino_class import ArduinoHandler
 from classes.joystick_class import Mac_Controller,Linux_Controller,Windows_Controller
 from classes.simulation_class import HelmholtzSimulator
-from classes.projection_class import AxisProjection
 from classes.acoustic_class import AcousticClass
-from classes.halleffect_class import HallEffect
-from classes.record_class import RecordThread
-from classes.calibration_dialog import CalibrationDialog, load_calibration
+from classes import field_synth
+from classes.field_tabs import FieldControlsDock
+
 
 CALIBRATION_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "calibration.json",
 )
+from classes.halleffect_class import HallEffect
+from classes.record_class import RecordThread
 
 
 
@@ -60,28 +61,46 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
+        # The .ui-generated dock widgets carry hard-coded minimum heights
+        # (329x987 and 411x1000) that prevent the operator from shrinking
+        # the main window below ~1000 px tall -- worse than the available
+        # viewport on most MacBook screens. Relax them so the window can
+        # actually be resized.
+        # Relax the .ui-generated dock minimums (329x987 and 411x1000) so
+        # the main window can shrink to a laptop viewport. The inner
+        # QScrollArea installed in _retrofit_*_dock handles the actual
+        # content overflow.
+        self.ui.dockWidget.setMinimumSize(QtCore.QSize(280, 280))
+        self.ui.dockWidget_2.setMinimumSize(QtCore.QSize(280, 280))
+
         
 
         
         
         #self.showMaximized()
 
-        #resize some widgets to fit the screen better
-        screen  = QtWidgets.QDesktopWidget().screenGeometry(-1)
-        
-        self.window_width = screen.width()
-        self.window_height = screen.height()
+        # Resize to the available viewport (excludes the macOS menu bar and Dock,
+        # and Windows taskbar). screenGeometry() previously used the full raw
+        # screen size, which pushed the bottom log widget below the visible
+        # area on machines where the menu bar / Dock actually took space.
+        # Cap startup size to a laptop-friendly viewport (external monitors
+        # can be 4K but that just balloons the window). Set an explicit
+        # minimum so the operator can't accidentally shrink to unusability.
+        avail = QtWidgets.QDesktopWidget().availableGeometry(-1)
+        self.window_width = min(avail.width(), 1500)
+        self.window_height = min(avail.height(), 900)
         self.resize(self.window_width, self.window_height)
-        self.display_width = self.window_width# self.ui.frameGeometry().width()
+        self.setMinimumSize(QtCore.QSize(900, 550))
+        self.display_width = self.window_width  # a few callers still read this
+        self.aspectratio = 1041 / 801
 
-        self.displayheightratio = 0.79
-        self.framesliderheightratio = 0.031
-        self.textheightratio = .129
-        self.tabheightratio = 0.925
-        self.tabheightratio = 0.925
-        
-        self.aspectratio = 1041/801
-        self.resize_widgets()
+        # Retrofit the layout: put the dock contents inside a proper QVBoxLayout +
+        # QScrollArea so nothing clips, and replace the manually-positioned
+        # central widget children with a QSplitter so the log is always
+        # reachable and the video can be resized against it.
+        self._retrofit_left_dock()
+        self._retrofit_right_dock()
+        self._retrofit_central_widget()
 
     
       
@@ -134,6 +153,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sensorBx, self.sensorBy, self.sensorBz = 0,0,0
         self.field_magnitude = 100
 
+        # New (Step 3) field-synth state model. These are the *authoritative*
+        # inputs to apply_actions() -> arduino1.send_field(). The old Bx/By/Bz
+        # etc. above are scratch space that legacy code paths still write to;
+        # they get folded into this model at the end of update_actions().
+        # Steps 4-6 delete the old scratch vars entirely.
+        self.uniform_B = np.array([0.0, 0.0, 0.0])
+        self.gradient_dir = np.array([0.0, 0.0, 1.0])   # default: pull upward
+        self.gradient_mag = 0.0                          # magnitude of gradient bias
+        self.gradient_scale = 0.5                        # what "gradient checkbox on" means
+        self.roll_axis = np.array([0.0, 0.0, 1.0])       # default: roll about vertical
+        self.roll_freq = 0.0                             # Hz
+        self.roll_on = False
+
         #control tab functions
         self.control_status = False
         self.joystick_status = False
@@ -141,16 +173,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
         #connect to arduino
+        # Auto-discover on Unix-y systems by globbing /dev/cu.usbmodem*
+        # (macOS) or /dev/ttyACM* (Linux). Hard-coded port numbers vary
+        # per-Mac depending on which USB port the Arduino is in, so
+        # discovery is more reliable than fixed strings.
+        import glob as _glob
         PORT1, PORT2 = None, None
         if "mac" in platform.platform():
             self.tbprint("Detected OS: macos")
-            PORT1 = "/dev/cu.usbmodem11401"
-            PORT2 = "/dev/cu.usbmodem11301"
+            candidates = sorted(_glob.glob("/dev/cu.usbmodem*"))
+            if candidates:
+                PORT1 = candidates[0]
+                if len(candidates) > 1:
+                    PORT2 = candidates[1]
             self.controller_actions = Mac_Controller()
         elif "Linux" in platform.platform():
             self.tbprint("Detected OS: Linux")
-            PORT1 = "/dev/ttyACM0"
-            PORT2 = "/dev/ttyACM1"
+            candidates = sorted(_glob.glob("/dev/ttyACM*"))
+            if candidates:
+                PORT1 = candidates[0]
+                if len(candidates) > 1:
+                    PORT2 = candidates[1]
+            else:
+                PORT1 = "/dev/ttyACM0"
             self.controller_actions = Linux_Controller()
         elif "Windows" in platform.platform():
             self.tbprint("Detected OS:  Windows")
@@ -165,28 +210,39 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.arduino2 = ArduinoHandler(self.tbprint)
         self.arduino2.connect(PORT2)
-
-        # Auto-load coil-calibration gains if calibration.json exists in the repo root.
-        gains = load_calibration(CALIBRATION_PATH)
-        if gains is not None:
-            self.arduino1.set_gains(gains)
-            self.tbprint(f"Loaded calibration from {CALIBRATION_PATH}")
-
-        # Menu action to open the Calibration dialog.
-        menu = self.menuBar().addMenu("&Tools")
-        cal_action = menu.addAction("Coil Calibration...")
-        cal_action.triggered.connect(self.open_calibration_dialog)
-
-        #define, simulator class, pojection class, and acoustic class
+        
+        
+        #define, simulator class, and acoustic class
         self.simulator = HelmholtzSimulator(self.ui.magneticfieldsimlabel, width=310, height=310, dpi=200)
-        self.projection = AxisProjection()
         self.acoustic_module = AcousticClass()
         self.halleffect = HallEffect(self)
         self.halleffect.sensor_signal.connect(self.update_halleffect_sensor)
         self.halleffect.start()
         
+        # Auto-load calibration gains into arduino1 before any packet goes out.
+        gains = field_synth.load_gains(CALIBRATION_PATH)
+        if gains is not None:
+            self.arduino1.coil_gains = gains
+            self.tbprint(f"Loaded calibration from {CALIBRATION_PATH}")
+        cmap = field_synth.load_channel_map(CALIBRATION_PATH)
+        if cmap is not None:
+            self.arduino1.channel_map = cmap
+            self.tbprint(f"Loaded channel map: {cmap}")
+
+        # Add the tabbed Field Controls dock. Docked to the top so the two
+        # existing side docks (tracking / control) stay visible below it.
+        # Cap the height so it doesn't push the bottom log widget off-screen
+        # on smaller displays -- operators can still drag it larger or float
+        # it if they want more room.
+        self.field_controls_dock = FieldControlsDock(self, CALIBRATION_PATH)
+        # Cap the top-dock height so it doesn't crowd the central video area.
+        # QScrollArea inside each tab handles content overflow.
+        self.field_controls_dock.setMaximumHeight(320)
+        self.field_controls_dock.setMinimumHeight(180)
+        self.addDockWidget(QtCore.Qt.TopDockWidgetArea, self.field_controls_dock)
+
         self.setFile()
-        
+
         pygame.init()
         if pygame.joystick.get_count() == 0:
             self.tbprint("No Joystick Connected...")
@@ -478,37 +534,60 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
+    def _sync_new_state(self):
+        """Fold legacy Bx/By/Bz/freq/gradient_status scratch vars into the new
+        field_synth-facing state (uniform_B, gradient_*, roll_*), BUT only when
+        one of the legacy modes is actually driving them. When no legacy mode
+        is active, the Field & Gradient tab / Rotation tab own uniform_B /
+        gradient_mag / roll_axis / roll_freq directly and this bridge stays
+        out of the way."""
+        any_legacy_active = (
+            self.control_status or self.joystick_status
+            or self.manual_status or self.excel_actions_status
+        )
+        if any_legacy_active:
+            self.uniform_B = np.array([float(self.Bx), float(self.By), float(self.Bz)])
+            self.gradient_mag = self.gradient_scale if self.gradient_status else 0.0
+            self.roll_freq = float(self.freq)
+            self.roll_on = self.roll_freq > 1e-9
+        # Otherwise the tabs' direct writes to self.uniform_B / .gradient_mag /
+        # .roll_freq / .roll_axis stay authoritative.
+
     def apply_actions(self, status):
-        #the purpose of this function is to output the actions via arduino, 
-        # show the actions via the simulator
-        # and record the actions by appending the field_list
-        if self.freq > 0:
-            if self.ui.swimradio.isChecked():
-                self.simulator.roll = False
-            elif self.ui.rollradio.isChecked():
-                self.alpha = self.alpha - np.pi/2
-                self.simulator.roll = True
+        """Push the current field-synth state to the Arduino.
 
-        #zero output
-        if status == False:
+        `status=False` means the operator is stopping output: zero all state
+        and send a zeroed packet. Simulator visualization is now driven by the
+        commanded field vector (uniform_B), not the old alpha/gamma/psi
+        parametrization -- the simulator overhaul in Step 5 completes this.
+        """
+        if status is False:
             self.manual_status = False
-            self.Bx, self.By, self.Bz, self.alpha, self.gamma, self.freq, self.psi, self.acoustic_frequency = 0,0,0,0,0,0,0,0
+            self.Bx = self.By = self.Bz = 0.0
+            self.alpha = self.gamma = self.psi = self.freq = 0.0
+            self.acoustic_frequency = 0.0
 
-        #output current actions to simulator
+        self._sync_new_state()
 
-        self.simulator.Bx = self.Bx
-        self.simulator.By = self.By
-        self.simulator.Bz = self.Bz
-        self.simulator.alpha = self.alpha
-        self.simulator.gamma = self.gamma
-        self.simulator.psi = self.psi
-        self.simulator.freq = self.freq
-        self.simulator.omega = 2 * np.pi * self.simulator.freq
-
-        #send arduino commands
-        self.arduino1.send(self.Bx, self.By, self.Bz, self.alpha, self.gamma, self.freq, self.psi, self.gradient_status, self.equal_field_status, self.acoustic_frequency)
-        
-        self.arduino2.send(self.Mx, self.My, self.Mz, 0, 0, 0, 0, 0, 0, 0)
+        # Compute the currents once so the Arduino send and the simulator
+        # visualization see identical numbers. This is the same math the
+        # ArduinoHandler.send_field wrapper would do; we call synthesize()
+        # directly to also feed the simulator's bar chart.
+        t = time.perf_counter()
+        currents = field_synth.synthesize(
+            uniform_B=self.uniform_B,
+            gradient_dir=self.gradient_dir,
+            gradient_mag=self.gradient_mag,
+            roll_axis=self.roll_axis,
+            roll_freq_hz=self.roll_freq,
+            t=t,
+            gains=None,
+        )
+        self.simulator.set_state(self.uniform_B, currents)
+        self.arduino1.send(currents, float(self.acoustic_frequency))
+        # arduino2 (stage position controller) is not wired to the field-synth
+        # path. Keep it silent until the state-machine rebuild in Step 6.
+        self.arduino2.send([0.0] * 6, 0.0)
 
 
 
@@ -603,17 +682,7 @@ class MainWindow(QtWidgets.QMainWindow):
    
     
     
-    def open_calibration_dialog(self):
-        dlg = CalibrationDialog(self.arduino1, self.tbprint, CALIBRATION_PATH, parent=self)
-        dlg.exec_()
-        # When dialog closes, zero the coils so a lingering test pulse doesn't stay on.
-        try:
-            self.arduino1.send_calibration_all_off()
-        except Exception:
-            pass
-
-
-    def toggle_control_status(self):
+    def toggle_control_status(self): 
         if self.ui.controlbutton.isChecked():
             self.control_status = True
             self.ui.controlbutton.setText("Stop")
@@ -706,14 +775,23 @@ class MainWindow(QtWidgets.QMainWindow):
         
 
     def tbprint(self, text):
-        #print to textbox
-        self.ui.plainTextEdit.appendPlainText("$ "+ text)
+        # Route to both the GUI text log AND stderr so headless/small-screen
+        # debug is possible without seeing the widget (log appears in stdout
+        # / /tmp/bigtweezer_run.log when launching from terminal).
+        line = "$ " + text
+        self.ui.plainTextEdit.appendPlainText(line)
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
     
 
     def convert_coords(self,pos):
         #need a way to convert the video position of mouse to the actually coordinate in the window
-        newx = int(pos.x() * (self.video_width / self.display_width)) 
-        newy = int(pos.y() * (self.video_height / self.display_height))
+        dw = max(self.ui.VideoFeedLabel.width(), 1)
+        dh = max(self.ui.VideoFeedLabel.height(), 1)
+        newx = int(pos.x() * (self.video_width / dw))
+        newy = int(pos.y() * (self.video_height / dh))
         return newx, newy
     
     
@@ -831,26 +909,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def update_image(self, frame):
         """Updates the image_label with a new opencv image"""
-        #display projection
+        # Video-frame overlay. Old code drew a 3D axis-projection widget via
+        # projection_class.AxisProjection; that has been retired along with
+        # the alpha/gamma/psi coupling. We now overlay only the commanded
+        # uniform B vector (as text) and acoustic frequency. Step 5's new
+        # FieldSimulator carries the 3D visualization in a proper Qt widget.
         if self.ui.toggledisplayvisualscheckbox.isChecked():
-            if self.control_status == True or self.joystick_status == True or self.manual_status == True or self.excel_actions_status == True :
-                self.projection.roll = self.ui.rollradio.isChecked()
-                self.projection.gradient = self.gradient_status
-
-
-                frame, self.projection.draw_sideview(frame,self.Bx,self.By,self.Bz,self.alpha,self.gamma,self.video_width,self.video_height)
-                frame, self.projection.draw_topview(frame,self.Bx,self.By,self.Bz,self.alpha,self.gamma,self.video_width,self.video_height)
-                
-                rotatingfield = "alpha: {:.0f}, gamma: {:.0f}, psi: {:.0f}, freq: {:.0f}".format(np.degrees(self.alpha)+90, np.degrees(self.gamma), np.degrees(self.psi), self.freq) #adding 90 to alpha for display purposes only
-                
-                cv2.putText(frame, rotatingfield,
-                    (int(self.video_width / 1.8),int(self.video_height / 20)),
+            if self.control_status or self.joystick_status or self.manual_status or self.excel_actions_status:
+                Bx, By, Bz = self.uniform_B
+                field_txt = f"Bx: {Bx:+.2f}  By: {By:+.2f}  Bz: {Bz:+.2f}  roll: {self.roll_freq:.1f} Hz"
+                cv2.putText(frame, field_txt,
+                    (int(self.video_width / 1.8), int(self.video_height / 20)),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    fontScale=1.5, 
+                    fontScale=1.5,
                     thickness=3,
-                    color = (255, 255, 255),
+                    color=(255, 255, 255),
                 )
-            
+
             acousticfreq = f'{self.acoustic_frequency:,} Hz'
             cv2.putText(frame, acousticfreq,
                 (int(self.video_width / 8),int(self.video_height / 14)),
@@ -873,7 +948,14 @@ class MainWindow(QtWidgets.QMainWindow):
       
         bytes_per_line = ch * w
         convert_to_Qt_format = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
-        p = convert_to_Qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
+        # Scale to the actual current label size instead of the pre-layout
+        # display_width/height. The QSplitter drives label size now, so we
+        # just read it every frame.
+        target_w = max(self.ui.VideoFeedLabel.width(), 320)
+        target_h = max(self.ui.VideoFeedLabel.height(), 240)
+        self.display_width = target_w
+        self.display_height = target_h
+        p = convert_to_Qt_format.scaled(target_w, target_h, Qt.KeepAspectRatio)
         qt_img = QPixmap.fromImage(p)
        
         #update frame slider too
@@ -958,49 +1040,69 @@ class MainWindow(QtWidgets.QMainWindow):
 
     
     def setFile(self):
-        if self.videopath == 0:
+        # setFile is called from __init__ AND from track() (and selectFile).
+        # If we don't release the previous capture, aravis / EasyPySpin can't
+        # re-claim the USB and we silently fall through to the cv2 webcam.
+        if self.cap is not None:
             try:
-                self.cap  = EasyPySpin.VideoCapture(0)
-
-                self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
-                # Camera max frame rate at full resolution is ~19 fps; asking for
-                # more just triggers an EasyPySpin clamp warning each launch.
-                self.cap.set(cv2.CAP_PROP_FPS, 19)
-
-                # Force BGR8 pixel format. PixelFormat is read-only while
-                # streaming, so end acquisition, set the format, restart. Doing
-                # this here rather than relying on the EasyPySpin monkey-patch
-                # covers cases where our source-patch needle doesn't match.
-                try:
-                    import PySpin
-                    cam = self.cap.cam
-                    try:
-                        cam.EndAcquisition()
-                    except Exception:
-                        pass
-                    try:
-                        cam.PixelFormat.SetValue(PySpin.PixelFormat_BGR8)
-                        self.tbprint("Camera PixelFormat set to BGR8")
-                    except Exception as e:
-                        self.tbprint(f"Could not set PixelFormat=BGR8 ({e}); leaving default")
-                    try:
-                        cam.BeginAcquisition()
-                    except Exception:
-                        pass
-                except ImportError:
-                    pass
-
-                self.tbprint("Connected to FLIR Camera")
-
-                if not self.cap.isOpened():
-                    self.cap  = cv2.VideoCapture(0)
-                    self.tbprint("No EasyPySpin Camera Available")
-            
+                self.cap.release()
             except Exception:
-                self.cap  = cv2.VideoCapture(0) 
-                self.tbprint("No EasyPySpin Camera Available")
-                
-                
+                pass
+            self.cap = None
+
+        if self.videopath == 0:
+            # Preferred camera source order:
+            #   1. aravis (Homebrew) -- lets FLIR U3V cameras stream on macOS
+            #      where Spinnaker isn't officially supported. Also works on
+            #      Linux where it's an easy alternative to Spinnaker.
+            #   2. EasyPySpin (Spinnaker SDK) -- Windows / Linux with FLIR SDK.
+            #   3. cv2.VideoCapture(0) -- fallback to a UVC webcam.
+            try:
+                from classes import aravis_camera
+                if aravis_camera.is_available():
+                    self.cap = aravis_camera.AravisCameraCapture(printer=self.tbprint)
+                    if self.cap.isOpened():
+                        self.cap.set(cv2.CAP_PROP_FPS, 19)
+                        self.tbprint("Connected to FLIR Camera via aravis")
+                    else:
+                        self.cap = None
+                else:
+                    self.tbprint("aravis: no camera enumerated")
+            except Exception as e:
+                self.tbprint(f"aravis backend unavailable: {e}")
+                self.cap = None
+
+            if self.cap is None or not self.cap.isOpened():
+                try:
+                    self.cap = EasyPySpin.VideoCapture(0)
+                    self.cap.set(cv2.CAP_PROP_AUTO_WB, True)
+                    self.cap.set(cv2.CAP_PROP_FPS, 19)
+
+                    # Force BGR8 pixel format. PixelFormat is read-only while
+                    # streaming, so end acquisition, set format, restart.
+                    try:
+                        import PySpin
+                        cam = self.cap.cam
+                        try: cam.EndAcquisition()
+                        except Exception: pass
+                        try:
+                            cam.PixelFormat.SetValue(PySpin.PixelFormat_BGR8)
+                            self.tbprint("Camera PixelFormat set to BGR8")
+                        except Exception as e:
+                            self.tbprint(f"Could not set PixelFormat=BGR8 ({e}); leaving default")
+                        try: cam.BeginAcquisition()
+                        except Exception: pass
+                    except ImportError:
+                        pass
+
+                    self.tbprint("Connected to FLIR Camera via EasyPySpin")
+                except Exception:
+                    self.cap = None
+
+                if self.cap is None or not self.cap.isOpened():
+                    self.cap = cv2.VideoCapture(0)
+                    self.tbprint("No FLIR camera found; using webcam via cv2")
+
             self.ui.pausebutton.hide()
             self.ui.leftbutton.hide()
             self.ui.rightbutton.hide()
@@ -1017,8 +1119,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tbprint("Width: {}  --  Height: {}  --  Fps: {}".format(self.video_width,self.video_height,self.videofps))
 
         self.aspectratio = (self.video_width / self.video_height)
-
-        self.resize_widgets()        
+        # (Layout is now driven by QSplitter + QScrollArea; nothing needs to
+        # be re-positioned on aspect-ratio change.)
 
         if self.videopath == 0:
             self.ui.robotsizeunitslabel.setText("um")
@@ -1028,7 +1130,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.robotvelocityunitslabel.setText("px/s")
             self.totalnumframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.tbprint("Total Frames: {} ".format(self.totalnumframes))
-            self.ui.frameslider.setGeometry(QtCore.QRect(10, self.display_height+12, self.display_width, 20))
+            # frameslider is in the QSplitter's bottom vbox now; layout drives
+            # its geometry, so we only need to set the range and show/hide.
             self.ui.frameslider.setMaximum(self.totalnumframes)
             self.ui.frameslider.show()
         
@@ -1296,29 +1399,121 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.exposurebox.setValue(5000)
         
 
-    def resizeEvent(self, event):
-        windowsize = event.size()
-        self.window_width = windowsize.width()
-        self.window_height = windowsize.height()
-        self.resize_widgets()
- 
-    def resize_widgets(self):
-        self.display_height = int(self.window_height*self.displayheightratio) #keep this fixed, changed the width dpending on the aspect ratio
-        self.framesliderheight = int(self.window_height*self.framesliderheightratio)
-        self.textheight = int(self.window_height*self.textheightratio)
-        self.tabheight = self.window_height*self.tabheightratio
-        self.display_height = int(self.window_height*self.displayheightratio) #keep this fixed, changed the width dpending on the aspect ratio
-        self.framesliderheight = int(self.window_height*self.framesliderheightratio)
-        self.textheight = int(self.window_height*self.textheightratio)
-        self.tabheight = self.window_height*self.tabheightratio
+    # ------------------------------------------------------------------
+    # Layout retrofit. The .ui-generated widgets sit at absolute pixel
+    # positions inside frames; we replace the top-level dock contents with
+    # a proper QVBoxLayout in a QScrollArea so nothing clips when the
+    # window is smaller than the design-time 1728x1027.
+    # ------------------------------------------------------------------
 
-        self.display_width = int(self.display_height * self.aspectratio)
+    @staticmethod
+    def _wrap_in_scroll(container_widget, existing_child_widgets):
+        """Rebuild `container_widget` around a scrollable QVBoxLayout of the
+        given child widgets. Each child keeps its own internal layout /
+        absolute positioning (they are QFrames with fixed content); we only
+        re-parent them into a vertical box so the box grows or scrolls with
+        the surrounding QDockWidget."""
+        for w in existing_child_widgets:
+            w.setParent(None)
+        # Clear whatever the .ui put on the container.
+        old_layout = container_widget.layout()
+        if old_layout is not None:
+            QtWidgets.QWidget().setLayout(old_layout)  # detach
 
-        self.ui.VideoFeedLabel.setGeometry(QtCore.QRect(10,  5,                       self.display_width,     self.display_height))
-        self.ui.frameslider.setGeometry(QtCore.QRect(10,    self.display_height+12,   self.display_width,     self.framesliderheight))
-        self.ui.plainTextEdit.setGeometry(QtCore.QRect(10,  self.display_height+20+self.framesliderheight,   self.display_width,     self.textheight))
+        inner = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(inner)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(6)
+        for w in existing_child_widgets:
+            vbox.addWidget(w)
+        vbox.addStretch(1)
 
-        #self.ui.tabWidget.setGeometry(QtCore.QRect(12,  6,  260 ,     self.tabheight))
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+        outer = QtWidgets.QVBoxLayout(container_widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+    def _retrofit_left_dock(self):
+        # The .ui-generated frames contain their own absolute-positioned
+        # children. Pin each frame's minimum size to what the .ui set so
+        # the enclosing vbox doesn't collapse them and hide the buttons.
+        self.ui.frame_3.setMinimumSize(311, 231)
+        self.ui.trackerparamsframe.setMinimumSize(311, 281)
+        self.ui.robotparamsframe.setMinimumSize(311, 61)
+        self.ui.CroppedVideoFeedLabel.setFixedSize(310, 310)
+        children = [
+            self.ui.frame_3,
+            self.ui.trackerparamsframe,
+            self.ui.robotparamsframe,
+            self.ui.CroppedVideoFeedLabel,
+            self.ui.croppedmasktoggle,
+            self.ui.croppedrecordbutton,
+            self.ui.resetdefaultbutton,
+        ]
+        self._wrap_in_scroll(self.ui.dockWidgetContents, children)
+
+    def _retrofit_right_dock(self):
+        # Pin each frame's minimum size to the .ui-designed size so vertical
+        # collapse doesn't hide their absolute-positioned children.
+        self.ui.frame.setMinimumSize(391, 212)
+        self.ui.frame_2.setMinimumSize(391, 161)
+        self.ui.frame_4.setMinimumSize(381, 131)
+        self.ui.controlparamsframe.setMinimumSize(391, 71)
+        self.ui.magneticfieldsimlabel.setFixedSize(310, 310)
+        children = [
+            self.ui.frame,           # modes + acoustic + Excel actions
+            self.ui.frame_2,         # manual field + alpha + shape maker
+            self.ui.frame_4,         # gamma / psi / freq dials (legacy)
+            self.ui.controlparamsframe,
+            self.ui.magneticfieldsimlabel,
+            self.ui.simulationbutton,
+        ]
+        self._wrap_in_scroll(self.ui.dockWidgetContents_4, children)
+
+    def _retrofit_central_widget(self):
+        """Replace the manually-positioned VideoFeedLabel / frameslider /
+        plainTextEdit with a QSplitter so the log is always visible and the
+        operator can drag the split between video and log."""
+        central = self.centralWidget()
+        # Purge whatever layout the .ui installed on the central widget.
+        old_layout = central.layout()
+        if old_layout is not None:
+            QtWidgets.QWidget().setLayout(old_layout)
+
+        # Detach children so we can re-parent them.
+        for w in (self.ui.VideoFeedLabel, self.ui.frameslider, self.ui.plainTextEdit):
+            w.setParent(None)
+
+        self.ui.VideoFeedLabel.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.ui.VideoFeedLabel.setMinimumSize(320, 240)
+        # Center any letterbox instead of leaving the pixmap top-left inside a
+        # larger black area, which looked like "a black bar next to the video".
+        self.ui.VideoFeedLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.ui.VideoFeedLabel.setScaledContents(False)
+
+        bottom_widget = QtWidgets.QWidget()
+        bv = QtWidgets.QVBoxLayout(bottom_widget)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(4)
+        bv.addWidget(self.ui.frameslider)
+        self.ui.plainTextEdit.setMinimumHeight(100)
+        bv.addWidget(self.ui.plainTextEdit)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        splitter.addWidget(self.ui.VideoFeedLabel)
+        splitter.addWidget(bottom_widget)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)
+
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.addWidget(splitter)
 
     def handle_zoom(self, frame):
         
@@ -1373,13 +1568,21 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         called when x button is pressed
         """
-        
+
         if self.tracker is not None:
             self.tracker.stop()
         #self.recorder.stop()
-        
+
         self.simulator.stop()
         self.apply_actions(False)
         self.halleffect.stop()
         self.arduino1.close()
         self.arduino2.close()
+        # Release the camera. Important on the aravis path: without this the
+        # FLIR's USB claim can persist after the process dies and the next
+        # main.py launch gets LIBUSB_ERROR_ACCESS.
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
